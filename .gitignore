@@ -23,3 +23,4 @@ recordings/
 *.wav
 !demo/*.wav
 *.mp3
+!public/announcer/*.mp3

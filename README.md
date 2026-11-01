@@ -35,15 +35,26 @@ Both audio sources share the same path. Replay runs in real time by default, so 
 
 Each result shows its entailment score and deciding candidate. The streamer opts in, and moderators or the broadcaster have a short veto window before a found clip plays.
 
+## Chat commands
+
+- `!replay` plays the most recent played receipt from this session.
+- `!replay N` plays the Nth played receipt from this session; 1 is the oldest.
+- `!settled` clears the on-record quote. Moderators and the broadcaster can use it.
+- `!veto` cancels a pending receipt, or stops and removes an active hall-of-shame replay.
+
+Replays require opt-in and use the saved WAV with the original transcript quote. They have a 60-second default cooldown (`RECEIPTS_REPLAY_COOLDOWN_S`). The fixed announcer clips can be disabled with `RECEIPTS_ANNOUNCER=0`; missing clips are skipped.
+
 ## Privacy
 
 Audio is held in a bounded, local rolling buffer (three minutes by default). Confirmed receipt clips and their JSON records persist locally under ignored `data/receipts/`; no audio or transcript is uploaded. The app sends a chat reply through Twitch when connected. Opt-in starts off for real Twitch mode; the scripted demo opts in automatically and identifies itself as simulated.
+
+After playback, the newest verbatim receipt quote remains in a small ON RECORD strip until a moderator or broadcaster marks it settled. Opting out clears the strip. Use `RECEIPTS_DATA_DIR` to select a separate local receipt archive, for example for a clean demo.
 
 ## Honest results
 
 The headline speech evaluation used the cached transcript from the 75-second LibriVox *Alice's Adventures in Wonderland* audiobook excerpt with synthetic background noise, not a real streamer. The claims were written by Codex. On the fresh audio set, **15/20 outcomes were correct**, with **zero wrong RECEIPT FOUND** and **6 of 10 true claims found**. Mean claim-to-decision latency was **207.8 ms**, p95 **242.5 ms**; GPU ASR mean real-time factor was **0.203**, and WER was **11.53%**. The separate synthetic first-person gaming text set scored **15/16**, including **one wrong RECEIPT FOUND**. These results are reproduced from [eval/RESULTS.md](eval/RESULTS.md); the synthetic-text result is not speech accuracy evidence.
 
-The current TypeScript suite passed **14 checks** in the latest `npm test` run (8 matcher/audio assertions plus 6 replay, sidecar, storage, and receipt-refinement checks).
+The current TypeScript suite passed **21 checks** in the latest `npm test` run, including matcher/audio assertions, show-control policy, sidecar failure handling, storage, and receipt refinement.
 
 ## How Codex built it
 

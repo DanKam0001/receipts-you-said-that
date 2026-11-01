@@ -87,6 +87,7 @@ export function wav(pcm: Buffer): Buffer {
 export class RollingAudioBuffer {
   private chunks: Array<{ start: number; end: number; pcm: Buffer }> = [];
   constructor(private readonly maxSeconds = 180) {}
+  clear() { this.chunks = []; }
   get bufferedSeconds() { return this.chunks.length ? this.chunks[this.chunks.length - 1]!.end - this.chunks[0]!.start : 0; }
   push(chunk: { start: number; end: number; pcm: Buffer }) {
     this.chunks.push(chunk); const cutoff = chunk.end - this.maxSeconds;
@@ -106,4 +107,9 @@ export class RollingAudioBuffer {
     });
     return wav(Buffer.concat(pieces));
   }
+}
+
+export function resetReplaySession(buffer: RollingAudioBuffer, transcript: unknown[]) {
+  buffer.clear();
+  transcript.length = 0;
 }

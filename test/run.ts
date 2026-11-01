@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { RollingAudioBuffer } from "../src/audio.js";
+import { resetReplaySession, RollingAudioBuffer } from "../src/audio.js";
 import { decideVerified, normalizeClaimForNli, retrieve, type Candidate, type NliProbabilities } from "../src/matcher.js";
 import type { Utterance } from "../src/model.js";
 import { fitQuote, receiptCountLabel } from "../src/overlay-layout.js";
+import { ANNOUNCER_FILES, announcerForOutcome, maySettle, replayCooldownRemaining, selectReplayReceipt } from "../src/show-control.js";
 
 let count = 0;
 function test(name: string, body: () => void) { body(); count++; console.log(`ok ${count} - ${name}`); }
@@ -29,6 +30,39 @@ test("overlay quote fitting stays at least 44px, within three lines, and retains
   assert.ok(fit.startWord <= 68 && fit.endWord > 68);
   assert.match(fit.text, /^… /);
   assert.match(fit.text, / …$/);
+});
+
+test("announcer choices map outcomes to the six fixed files", () => {
+  assert.deepEqual([...ANNOUNCER_FILES], ["found.mp3", "nomatch.mp3", "canttell.mp3", "vetoed.mp3", "played.mp3", "replay.mp3"]);
+  assert.equal(announcerForOutcome("RECEIPT FOUND"), "found.mp3");
+  assert.equal(announcerForOutcome("NO MATCH"), "nomatch.mp3");
+  assert.equal(announcerForOutcome("CAN'T TELL"), "canttell.mp3");
+});
+
+test("hall of shame replay selection rejects pending and vetoed receipts", () => {
+  const rows = [{ id: "pending", status: "pending" }, { id: "vetoed", status: "vetoed" }, { id: "old", status: "played" }, { id: "new", status: "played" }] as const;
+  assert.equal(selectReplayReceipt(rows)?.id, "new");
+  assert.equal(selectReplayReceipt(rows, 1)?.id, "old");
+  assert.equal(selectReplayReceipt(rows, 3), undefined);
+});
+
+test("hall of shame replay cooldown reports remaining time", () => {
+  assert.equal(replayCooldownRemaining(undefined, 100_000, 60), 0);
+  assert.equal(replayCooldownRemaining(100_000, 130_000, 60), 30);
+  assert.equal(replayCooldownRemaining(100_000, 160_000, 60), 0);
+});
+
+test("settling an on-record quote is moderator and broadcaster only", () => {
+  assert.equal(maySettle(false, false), false);
+  assert.equal(maySettle(true, false), true);
+  assert.equal(maySettle(false, true), true);
+});
+
+test("starting file replay clears the rolling audio buffer and transcript", () => {
+  const ring = new RollingAudioBuffer(10); ring.push({ start: 0, end: 2, pcm: Buffer.alloc(64000) });
+  const transcript: Utterance[] = [{ start: 0, end: 2, text: "old session" }];
+  resetReplaySession(ring, transcript);
+  assert.equal(ring.bufferedSeconds, 0); assert.equal(ring.clip(0, 1), undefined); assert.equal(transcript.length, 0);
 });
 
 test("retrieval includes adjacent windows of one, two, and three utterances, capped at eight", () => {

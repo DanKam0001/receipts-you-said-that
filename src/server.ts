@@ -6,13 +6,14 @@ import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { WebSocketServer } from "ws";
-import { FfmpegPcmSource, RollingAudioBuffer } from "./audio.js";
+import { FfmpegPcmSource, resetReplaySession, RollingAudioBuffer } from "./audio.js";
 import { decideVerified, DEFAULT_THRESHOLDS, normalizeClaimForNli, retrieve, type DecisionThresholds } from "./matcher.js";
 import type { ChatMessage, Receipt, Utterance } from "./model.js";
 import { SimulatedChatSource, TwitchChatSource, type ChatSource } from "./twitch.js";
 import { WhisperWorker } from "./transcriber.js";
 import { ReceiptStore } from "./receipt-store.js";
 import { refineFoundReceipt } from "./receipt-refinement.js";
+import { ANNOUNCER_FILES, announcerForOutcome, maySettle, replayCooldownRemaining, selectReplayReceipt, type AnnouncerFile } from "./show-control.js";
 
 const app = express(); app.use(express.json()); app.use(express.static("public"));
 const http = createServer(app), wss = new WebSocketServer({ server: http });
@@ -24,10 +25,17 @@ let lives = maxLives, optedIn = demo;
 let receipt: Receipt | undefined, audioSource: FfmpegPcmSource | undefined, chat: ChatSource;
 let eventsubConnected = false, lifetimeReceiptCount = 0;
 const buffer = new RollingAudioBuffer(180), transcript: Utterance[] = [], clips = new Map<string, Buffer>();
+let onRecordReceipt: Receipt | undefined;
+let playedReceipts: Receipt[] = [];
+let lastReplayStartedAt: number | undefined;
+let activeReplayReceiptId: string | undefined;
+let announcerEvent: { id: string; file: AnnouncerFile } | undefined;
+let overlayPlayback: { requestId: string; kind: "receipt" | "replay"; playing: boolean; receipt: Receipt; clipUrl: string } | undefined;
+let stopPlaybackRequest: string | undefined;
 const clients = new Set<import("ws").WebSocket>();
 
 const receiptStore = new ReceiptStore(resolve(process.env.RECEIPTS_DATA_DIR || "data/receipts"));
-function snapshot() { return { lives, maxLives, optedIn, receipt, transcript: transcript.length, embeddingMs: lastEmbeddingLatency, bufferedSeconds: buffer.bufferedSeconds, asr: worker.status, audio: audioSource ? "running" : "stopped", source: chat ? (chat.simulated ? "simulated" : "twitch") : "none", simulated: Boolean(chat?.simulated), scriptedAudio: demo || process.env.RECEIPTS_SCRIPTED_AUDIO === "1", eventsubConnected, lifetimeReceiptCount, holdMs: Number(process.env.RECEIPTS_HOLD_MS ?? 5000) }; }
+function snapshot() { return { lives, maxLives, optedIn, receipt, onRecordReceipt, announcerFiles: ANNOUNCER_FILES, announcerEnabled: process.env.RECEIPTS_ANNOUNCER !== "0", announcerEvent, overlayPlayback, stopPlaybackRequest, transcript: transcript.length, embeddingMs: lastEmbeddingLatency, bufferedSeconds: buffer.bufferedSeconds, asr: worker.status, audio: audioSource ? "running" : "stopped", source: chat ? (chat.simulated ? "simulated" : "twitch") : "none", simulated: Boolean(chat?.simulated), scriptedAudio: demo || process.env.RECEIPTS_SCRIPTED_AUDIO === "1", eventsubConnected, lifetimeReceiptCount, holdMs: Number(process.env.RECEIPTS_HOLD_MS ?? 5000) }; }
 function broadcast() { const value = JSON.stringify(snapshot()); for (const c of clients) if (c.readyState === 1) c.send(value); }
 wss.on("connection", c => { clients.add(c); c.send(JSON.stringify(snapshot())); c.on("close", () => clients.delete(c)); });
 
@@ -44,8 +52,10 @@ worker.on("transcript", (segments: Utterance[]) => {
 });
 
 function sendReply(text: string) { void chat?.send(text).catch(e => console.error(`Chat send failed (${(e as Error).message})`)); }
+function announce(file: AnnouncerFile) { announcerEvent = { id: randomUUID(), file }; }
 async function startAudio(mode: "file" | "device", value: string) {
   await audioSource?.stop();
+  if (mode === "file") resetReplaySession(buffer, transcript);
   const source = new FfmpegPcmSource(value, mode); audioSource = source;
   source.on("chunk", (chunk: { start: number; end: number; pcm: Buffer }) => { buffer.push(chunk); worker.submit(chunk); broadcast(); });
   source.on("error", (err: Error) => console.error(`[audio] ${err.message}`));
@@ -70,9 +80,40 @@ function processChat(message: ChatMessage) {
   const text = message.text.trim();
   if (/^!veto(?:\s|$)/i.test(text)) {
     if (!canVeto(message)) { sendReply("Only moderators and the broadcaster can veto."); return; }
-    if (receipt?.outcome === "RECEIPT FOUND" && receipt.status === "pending") {
-      receipt.status = "vetoed"; clips.delete(receipt.id); clearTimeout(pendingTimer); sendReply("Receipt vetoed. No clip will play."); broadcast();
-    } else sendReply("There is no pending receipt to veto.");
+    if (activeReplayReceiptId && overlayPlayback?.kind === "replay" && overlayPlayback.playing) {
+      const replayId = activeReplayReceiptId, requestId = overlayPlayback.requestId;
+      activeReplayReceiptId = undefined;
+      clips.delete(replayId);
+      playedReceipts = playedReceipts.filter(item => item.id !== replayId);
+      if (receipt?.id === replayId) receipt.status = "vetoed";
+      overlayPlayback.receipt.status = "vetoed";
+      if (onRecordReceipt?.id === replayId) onRecordReceipt = undefined;
+      overlayPlayback = { ...overlayPlayback, playing: false };
+      stopPlaybackRequest = requestId;
+      announce("vetoed.mp3");
+      sendReply("Replay vetoed and removed from the hall of shame.");
+      void receiptStore.remove(replayId).then(count => { lifetimeReceiptCount = count; broadcast(); })
+        .catch(error => console.error(`[receipts] Could not remove vetoed replay: ${(error as Error).message}`));
+      broadcast();
+    } else if (receipt?.outcome === "RECEIPT FOUND" && receipt.status === "pending") {
+      receipt.status = "vetoed"; clips.delete(receipt.id); clearTimeout(pendingTimer); announce("vetoed.mp3"); sendReply("Receipt vetoed. No clip will play."); broadcast();
+    } else sendReply("There is no pending receipt or replay to veto.");
+    return;
+  }
+  if (/^!settled(?:\s|$)/i.test(text)) {
+    if (!maySettle(message.isMod, message.isBroadcaster)) { sendReply("Only moderators and the broadcaster can clear the on-record quote."); return; }
+    if (!onRecordReceipt) { sendReply("There is no on-record quote to clear."); return; }
+    onRecordReceipt = undefined; sendReply("Settled. The on-record quote is cleared."); broadcast(); return;
+  }
+  const replayMatch = text.match(/^!replay(?:\s+(\d+))?$/i);
+  if (replayMatch) {
+    if (!optedIn) { sendReply("Receipts are opted out by the broadcaster."); return; }
+    const cooldown = replayCooldownRemaining(lastReplayStartedAt, Date.now(), Number(process.env.RECEIPTS_REPLAY_COOLDOWN_S ?? 60));
+    if (cooldown > 0) { sendReply(`Replay is on cooldown for ${cooldown}s.`); return; }
+    const ordinal = replayMatch[1] ? Number(replayMatch[1]) : undefined;
+    const selected = selectReplayReceipt(playedReceipts, ordinal);
+    if (!selected) { sendReply(playedReceipts.some(item => item.status === "played") ? "There is no played receipt at that number." : "There is nothing to replay yet."); return; }
+    void beginReplay(selected);
     return;
   }
   const match = text.match(/^!receipts\s+(.{4,240})$/i);
@@ -80,8 +121,22 @@ function processChat(message: ChatMessage) {
   if (!optedIn) { sendReply("Receipts are opted out by the broadcaster."); return; }
   clearTimeout(pendingTimer);
   if (receipt) clips.delete(receipt.id);
+  stopPlaybackRequest = undefined;
   const query = match[1], start = performance.now();
   void decideClaim(query, message.username, start);
+}
+
+async function beginReplay(selected: Receipt) {
+  if (!optedIn || selected.status !== "played") return;
+  const clip = clips.get(selected.id) ?? await receiptStore.clip(selected.id);
+  if (!clip) { sendReply("That receipt's clip is no longer available to replay."); return; }
+  lastReplayStartedAt = Date.now();
+  activeReplayReceiptId = selected.id;
+  stopPlaybackRequest = undefined;
+  const replayReceipt = { ...selected, quoteWords: selected.quoteWords ? [...selected.quoteWords] : undefined };
+  overlayPlayback = { requestId: randomUUID(), kind: "replay", playing: true, receipt: replayReceipt, clipUrl: `/api/clip/${encodeURIComponent(selected.id)}` };
+  sendReply(`Playing receipt ${selected.id} from the hall of shame.`);
+  broadcast();
 }
 
 async function decideClaim(query: string, username: string, startedAt: number) {
@@ -106,25 +161,29 @@ async function decideClaim(query: string, username: string, startedAt: number) {
   }
   receipt.decisionMs = Number((performance.now() - startedAt).toFixed(1));
   console.log(`Receipt decision completed (${receipt.outcome}, entailment=${receipt.score.toFixed(3)}, candidate=${receipt.candidateId ?? "none"}, retrieval=${receipt.retrievalScore?.toFixed(3) ?? "none"}, decision_ms=${receipt.decisionMs})`);
-  if (receipt.outcome === "NO MATCH") { lives = Math.max(0, lives - 1); sendReply(`NO MATCH. Chat loses a life. ${lives} remain.`); }
-  else if (receipt.outcome === "CAN'T TELL") sendReply("CAN'T TELL. No life lost.");
+  if (receipt.outcome === "NO MATCH") { lives = Math.max(0, lives - 1); sendReply(`NO MATCH. Chat loses a life. ${lives} remain.`); announce(announcerForOutcome(receipt.outcome)); }
+  else if (receipt.outcome === "CAN'T TELL") { sendReply("CAN'T TELL. No life lost."); announce(announcerForOutcome(receipt.outcome)); }
   else {
     const foundReceipt = receipt;
     const wavClip = buffer.clip(foundReceipt.clipStart!, foundReceipt.clipEnd!);
-    if (!wavClip) { foundReceipt.outcome = "CAN'T TELL"; foundReceipt.reason = "The matching audio is no longer in the rolling buffer"; sendReply("CAN'T TELL. Audio is no longer available; no life lost."); }
+    if (!wavClip) { foundReceipt.outcome = "CAN'T TELL"; foundReceipt.reason = "The matching audio is no longer in the rolling buffer"; sendReply("CAN'T TELL. Audio is no longer available; no life lost."); announce(announcerForOutcome(foundReceipt.outcome)); }
     else {
       clips.set(foundReceipt.id, wavClip);
-      try { await archiveReceipt(foundReceipt, wavClip); }
-      catch (error) { console.error(`[receipts] Could not persist receipt ${foundReceipt.id}: ${(error as Error).message}`); }
     }
     if (foundReceipt.outcome === "RECEIPT FOUND") {
+      announce(announcerForOutcome(foundReceipt.outcome));
       sendReply("RECEIPT FOUND. Mod veto window is open.");
       const currentId = foundReceipt.id;
       const holdMs = Math.max(0, Number(process.env.RECEIPTS_HOLD_MS ?? 5000));
       foundReceipt.vetoUntil = Date.now() + holdMs;
       pendingTimer = setTimeout(() => {
         if (receipt?.id !== currentId || receipt.status !== "pending") return;
-        receipt.status = "played"; receipt.vetoUntil = undefined; broadcast();
+        receipt.status = "played"; receipt.vetoUntil = undefined;
+        onRecordReceipt = receipt;
+        playedReceipts.push(receipt);
+        overlayPlayback = { requestId: randomUUID(), kind: "receipt", playing: true, receipt, clipUrl: `/api/clip/${encodeURIComponent(currentId)}` };
+        void archiveReceipt(receipt, wavClip!).catch(error => console.error(`[receipts] Could not persist receipt ${currentId}: ${(error as Error).message}`)).finally(broadcast);
+        broadcast();
         setTimeout(() => clips.delete(currentId), 60_000).unref();
       }, holdMs);
     }
@@ -140,6 +199,7 @@ app.get("/proof", (_req, res) => res.sendFile(resolve("public/proof.html")));
 app.get("/demo", (_req, res) => demo ? res.sendFile(resolve("public/demo.html")) : res.sendStatus(404));
 app.get("/stage", (_req, res) => res.sendFile(resolve("public/stage.html")));
 app.get("/overlay-layout.js", (_req, res) => res.type("application/javascript").sendFile(resolve("dist/src/overlay-layout.js")));
+app.get("/show-control.js", (_req, res) => res.type("application/javascript").sendFile(resolve("dist/src/show-control.js")));
 app.get("/api/state", (_req, res) => res.json(snapshot()));
 app.get("/api/clip/:id", async (req, res) => { const clip = clips.get(req.params.id) ?? await receiptStore.clip(req.params.id); if (!clip) return res.sendStatus(404); res.type("audio/wav").send(clip); });
 app.get("/api/receipts", async (_req, res) => res.json(await receiptStore.list()));
@@ -148,17 +208,26 @@ app.get("/api/receipts/:id/clip", async (req, res) => {
   if (!clip) return res.sendStatus(404);
   res.type("audio/wav").send(clip);
 });
-app.post("/api/opt-in", (_req, res) => { optedIn = !optedIn; res.json(snapshot()); broadcast(); });
+app.post("/api/opt-in", (_req, res) => { optedIn = !optedIn; if (!optedIn) onRecordReceipt = undefined; res.json(snapshot()); broadcast(); });
 app.post("/api/simulate", (req, res) => {
   if (!demo || !(chat instanceof SimulatedChatSource)) return res.sendStatus(403);
   const text = String(req.body?.text ?? "").slice(0, 260);
   chat.inject({ userId: "demo-viewer", username: String(req.body?.username ?? "demo_viewer"), text, isMod: req.body?.isMod === true, isBroadcaster: req.body?.isBroadcaster === true });
   res.json({ accepted: true });
 });
-app.post("/api/veto", (req, res) => {
-  if (demo && chat instanceof SimulatedChatSource) processChat({ userId: "demo-mod", username: "demo_mod", text: "!veto", isMod: true, isBroadcaster: false });
-  else if (receipt?.outcome === "RECEIPT FOUND" && receipt.status === "pending") { receipt.status = "vetoed"; clips.delete(receipt.id); clearTimeout(pendingTimer); sendReply("Receipt vetoed. No clip will play."); broadcast(); }
+app.post("/api/veto", (_req, res) => {
+  processChat({ userId: "local-control", username: "local_control", text: "!veto", isMod: true, isBroadcaster: false });
   res.json(snapshot());
+});
+app.post("/api/playback/complete", (req, res) => {
+  const requestId = String(req.body?.requestId ?? "");
+  if (overlayPlayback?.requestId === requestId) {
+    if (overlayPlayback.kind === "replay" && activeReplayReceiptId === overlayPlayback.receipt.id) activeReplayReceiptId = undefined;
+    if (overlayPlayback.kind === "receipt" && overlayPlayback.receipt.status === "played") onRecordReceipt = overlayPlayback.receipt;
+    overlayPlayback = { ...overlayPlayback, playing: false };
+  }
+  if (stopPlaybackRequest === requestId) { stopPlaybackRequest = undefined; overlayPlayback = undefined; }
+  broadcast(); res.json({ ok: true });
 });
 app.post("/api/replay", async (req, res) => {
   try { const path = String(req.body?.path ?? process.env.RECEIPTS_AUDIO ?? ""); if (!path) throw new Error("Choose a WAV or MP3 replay path"); await startAudio("file", path); res.json({ ok: true }); }

@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 export interface ArchivedReceipt {
@@ -42,5 +42,11 @@ export class ReceiptStore {
     if (!/^[a-f0-9-]{36}$/i.test(id)) return undefined;
     try { return await readFile(resolve(this.root, `${id}.wav`)); }
     catch { return undefined; }
+  }
+
+  async remove(id: string): Promise<number> {
+    if (!/^[a-f0-9-]{36}$/i.test(id)) return (await this.list()).length;
+    await Promise.all([unlink(resolve(this.root, `${id}.wav`)).catch(() => undefined), unlink(resolve(this.root, `${id}.json`)).catch(() => undefined)]);
+    return (await this.list()).length;
   }
 }
