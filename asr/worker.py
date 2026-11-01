@@ -21,38 +21,40 @@ if cuda_dll_dir:
             print(json.dumps({"type": "status", "message": f"Could not add RECEIPTS_CUDA_DLL_DIR: {exc}"}), flush=True)
 
 import numpy as np
-from faster_whisper import WhisperModel
+skip_asr = os.environ.get("RECEIPTS_SKIP_ASR") == "1"
+if skip_asr:
+    model, probe_ms, device = None, 0.0, "asr-skipped"
+else:
+    from faster_whisper import WhisperModel
 
-size = os.environ.get("RECEIPTS_ASR_MODEL", "small.en")
-requested = os.environ.get("RECEIPTS_ASR_DEVICE", "cuda").strip().lower()
-if requested not in ("cuda", "cpu"):
-    raise ValueError("RECEIPTS_ASR_DEVICE must be either 'cuda' or 'cpu'")
-download_root = os.path.join(os.environ["HF_HOME"], "faster-whisper")
+    size = os.environ.get("RECEIPTS_ASR_MODEL", "small.en")
+    requested = os.environ.get("RECEIPTS_ASR_DEVICE", "cuda").strip().lower()
+    if requested not in ("cuda", "cpu"):
+        raise ValueError("RECEIPTS_ASR_DEVICE must be either 'cuda' or 'cpu'")
+    download_root = os.path.join(os.environ["HF_HOME"], "faster-whisper")
 
+    def load_and_probe(device: str, compute_type: str):
+        candidate = WhisperModel(size, device=device, compute_type=compute_type, download_root=download_root)
+        # faster-whisper runs inference lazily. Consume the generator so CUDA kernels
+        # and their runtime libraries are actually exercised before READY is emitted.
+        silence = np.zeros(2 * 16000, dtype=np.float32)
+        started = time.perf_counter()
+        segments, _ = candidate.transcribe(silence, language="en", beam_size=1, vad_filter=False)
+        list(segments)
+        return candidate, (time.perf_counter() - started) * 1000.0
 
-def load_and_probe(device: str, compute_type: str):
-    candidate = WhisperModel(size, device=device, compute_type=compute_type, download_root=download_root)
-    # faster-whisper runs inference lazily. Consume the generator so CUDA kernels
-    # and their runtime libraries are actually exercised before READY is emitted.
-    silence = np.zeros(2 * 16000, dtype=np.float32)
-    started = time.perf_counter()
-    segments, _ = candidate.transcribe(silence, language="en", beam_size=1, vad_filter=False)
-    list(segments)
-    return candidate, (time.perf_counter() - started) * 1000.0
-
-
-if requested == "cuda":
-    try:
-        model, probe_ms = load_and_probe("cuda", "float16")
-        device = "cuda/float16"
-    except Exception as exc:
-        print(json.dumps({"type": "status", "message": f"CUDA inference probe failed; switching to CPU int8: {exc}"}), flush=True)
-        gc.collect()
+    if requested == "cuda":
+        try:
+            model, probe_ms = load_and_probe("cuda", "float16")
+            device = "cuda/float16"
+        except Exception as exc:
+            print(json.dumps({"type": "status", "message": f"CUDA inference probe failed; switching to CPU int8: {exc}"}), flush=True)
+            gc.collect()
+            model, probe_ms = load_and_probe("cpu", "int8")
+            device = "cpu/int8"
+    else:
         model, probe_ms = load_and_probe("cpu", "int8")
         device = "cpu/int8"
-else:
-    model, probe_ms = load_and_probe("cpu", "int8")
-    device = "cpu/int8"
 
 try:
     from fastembed import TextEmbedding
@@ -112,6 +114,8 @@ for line in sys.stdin:
     try:
         item = json.loads(line)
         if item["type"] == "transcribe":
+            if model is None:
+                raise RuntimeError("ASR was skipped because the eval transcript cache is in use")
             audio = np.frombuffer(base64.b64decode(item["pcm"]), dtype="<i2").astype(np.float32) / 32768.0
             started = time.perf_counter()
             segments, _ = model.transcribe(audio, language="en", beam_size=3, vad_filter=True)

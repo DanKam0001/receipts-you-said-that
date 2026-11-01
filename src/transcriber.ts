@@ -68,6 +68,7 @@ export class WhisperWorker extends EventEmitter {
       child = this.launch(python, ["asr/worker.py"], { windowsHide: true, env: { ...process.env,
         HF_HOME: process.env.HF_HOME ?? "D:/hf_cache",
         FASTEMBED_CACHE_PATH: process.env.FASTEMBED_CACHE_PATH ?? "D:/hf_cache/fastembed",
+        RECEIPTS_SKIP_ASR: process.env.RECEIPTS_SKIP_ASR ?? "0",
         RECEIPTS_ASR_DEVICE: this.cpuStartupFallback ? "cpu" : (process.env.RECEIPTS_ASR_DEVICE ?? "cuda") } });
     } catch (error) {
       this.sidecarFailed(undefined, error as Error);

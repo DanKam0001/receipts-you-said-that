@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Receipts Archive</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101014;color:#fff;font:18px Arial,sans-serif;padding:32px}header{max-width:1000px;margin:auto}h1{font:900 48px Impact,'Arial Black',sans-serif;color:#ffca28;margin:0}a{color:#ffca28}.list{max-width:1000px;margin:24px auto;display:grid;gap:18px}.card{background:#202027;border:2px solid #555;border-radius:18px;padding:24px}.quote{font-size:26px;line-height:1.35;font-weight:700}.meta{color:#ffca28;margin:12px 0}.card audio{display:block;width:100%;margin:16px 0}.empty{opacity:.8}
+</style></head><body><header><h1>STREAMER ON RECORD</h1><p><a href="/control">Back to control</a> · Private local archive on this PC.</p><p id="count"></p></header><main id="list" class="list"></main>
+<script>
+const list=document.querySelector('#list');
+fetch('/api/receipts').then(r=>r.json()).then(rows=>{document.querySelector('#count').textContent=`${rows.length} receipts saved`;if(!rows.length){list.innerHTML='<p class="empty">No receipts saved yet.</p>';return}for(const r of rows){const card=document.createElement('article');card.className='card';const quote=document.createElement('div');quote.className='quote';quote.textContent='“'+(r.quote||'')+'”';const meta=document.createElement('div');meta.className='meta';meta.textContent=`${r.outcome} · ${new Date((r.timestamp||0)*1000).toLocaleTimeString()} · requested by ${r.requester} · entailment ${(r.score||0).toFixed(3)} · ${r.savedAt}`;const audio=document.createElement('audio');audio.controls=true;audio.preload='none';audio.src='/api/receipts/'+encodeURIComponent(r.id)+'/clip';card.append(quote,meta,audio);list.append(card)}}).catch(()=>{list.textContent='Could not load the local receipt archive.'});
+</script></body></html>

@@ -6,8 +6,8 @@ import type { Utterance } from "../src/model.js";
 let count = 0;
 function test(name: string, body: () => void) { body(); count++; console.log(`ok ${count} - ${name}`); }
 const p = (entailment: number, contradiction: number, neutral = 1 - entailment - contradiction): NliProbabilities => ({ entailment, contradiction, neutral });
-const base: Candidate = { id: "u2-2", startIndex: 1, utteranceCount: 1, premise: "I wondered how many miles I had fallen.", retrievalScore: 0.82,
-  quote: "I wondered how many miles I've fallen.", timestamp: 12, context: "It was a curious fall. … The ground seemed far away.", clipStart: 10, clipEnd: 17, negationConflict: false };
+const base: Candidate = { id: "u2-2", startIndex: 1, utteranceCount: 1, premise: "I wondered how many miles I had fallen.", retrievalScore: 0.82, lexicalScore: 0.42, semanticScore: 0.9,
+  quote: "I wondered how many miles I've fallen.", timestamp: 12, quoteEnd: 14, context: "It was a curious fall. … The ground seemed far away.", clipStart: 10, clipEnd: 17, negationConflict: false };
 
 test("viewer attribution is stripped before verification for first-person transcript wording", () => {
   assert.equal(normalizeClaimForNli("you said that Alice wondered how far she'd fallen"), "Alice wondered how far she'd fallen");
@@ -39,16 +39,21 @@ test("a clearly contradicting retrieved window yields NO MATCH with its entailme
   assert.equal(result.candidateId, base.id);
 });
 
-test("middle confidence returns CAN'T TELL and explicit polarity conflict vetoes FOUND", () => {
+test("middle confidence returns CAN'T TELL; high entailment can override the negation guard but low entailment cannot", () => {
   assert.equal(decideVerified("you said Alice was late", [base], [p(0.55, 0.12)], "viewer").outcome, "CAN'T TELL");
   const conflict = { ...base, premise: "I'll always play this.", negationConflict: true };
-  assert.equal(decideVerified("you said you'd never play this", [conflict], [p(0.96, 0.01)], "viewer").outcome, "CAN'T TELL");
+  assert.equal(decideVerified("you said you'd never play this", [conflict], [p(0.988, 0.01)], "viewer").outcome, "RECEIPT FOUND");
+  assert.equal(decideVerified("you said you'd never play this", [conflict], [p(0.84, 0.03)], "viewer").outcome, "CAN'T TELL");
 });
 
-test("missing or weakly retrieved candidate is a confident NO MATCH; empty claim is uncertain", () => {
+test("NO MATCH requires an on-topic NLI contradiction or no retrieved candidate; weak off-topic evidence is uncertain", () => {
   assert.equal(decideVerified("you said there was a secret", [], [], "viewer").outcome, "NO MATCH");
   assert.equal(decideVerified("!!!", [base], [p(0.9, 0.02)], "viewer").outcome, "CAN'T TELL");
-  assert.equal(decideVerified("you said secret", [{ ...base, retrievalScore: 0.05 }], [p(0.8, 0.02)], "viewer").outcome, "NO MATCH");
+  const offTopic = { ...base, retrievalScore: 0.32, lexicalScore: 0.03, semanticScore: 0.47 };
+  assert.equal(decideVerified("you said secret", [offTopic], [p(0.01, 0.92, 0.07)], "viewer").outcome, "CAN'T TELL");
+  const onTopicContradiction = { ...base, lexicalScore: 0.4 };
+  assert.equal(decideVerified("you said Alice ate marmalade", [onTopicContradiction], [p(0.02, 0.91, 0.07)], "viewer").outcome, "NO MATCH");
+  assert.equal(decideVerified("you said secret", [{ ...base, retrievalScore: 0.02 }], [p(0.01, 0.02)], "viewer").outcome, "NO MATCH");
 });
 
 test("rolling audio buffer emits a WAV cropped to the requested interval", () => {

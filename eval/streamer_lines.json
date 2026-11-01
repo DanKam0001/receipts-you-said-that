@@ -1,0 +1,127 @@
+{
+  "description": "Synthetic text fixture; casual first-person gaming commentary. No speech audio and no ASR.",
+  "lines": [
+    "I usually breeze through ranked; it feels free when we warm up.",
+    "I'm not queueing ranked tonight because those lobbies are rough.",
+    "My aim is awful before coffee.",
+    "We got wiped rotating through mid because I took the long route.",
+    "I always duo with Kai on weekends.",
+    "I never solo queue after midnight.",
+    "I think the new map is way better for snipers.",
+    "I'm saving my ult until the next fight.",
+    "I said the audio mix makes footsteps impossible to hear.",
+    "The patch fixed the recoil on my rifle.",
+    "I hate playing support when nobody watches flank.",
+    "I actually enjoy the chaos in quickplay.",
+    "We won that round because I waited before pushing.",
+    "I'm not blaming the healer; I overextended.",
+    "I could play another game, but my hands need a break.",
+    "I turned off motion blur for smoother frames.",
+    "The boss is easier if I stay close.",
+    "I miss the old ranked map rotation.",
+    "I accidentally bought the wrong skin.",
+    "I don't think the new shotgun is balanced.",
+    "I'm dropping at the harbor this match.",
+    "I use the left trigger to aim.",
+    "I changed my sensitivity from 4 to 5.",
+    "Our team should regroup instead of trickling in.",
+    "I heard someone upstairs, but I don't know where.",
+    "I was one hit from winning that duel.",
+    "I prefer controller for this game.",
+    "I haven't unlocked the gold camo yet.",
+    "I think the server lagged right as I fired.",
+    "I'm going to heal before we re-enter.",
+    "I wish the menu loaded faster.",
+    "We should save credits for next season.",
+    "I'm trying a different loadout today.",
+    "I keep forgetting to reload after fights.",
+    "The ranked grind is easy when I'm playing with friends.",
+    "I usually play solo, but tonight the squad is here.",
+    "I would never use that scope at this range.",
+    "I can hear the game, but my mic is muted.",
+    "I had a clean headshot from across the map.",
+    "I'm finished after this match; no more games."
+  ],
+  "claims": [
+    {
+      "id": "synthetic-01",
+      "expected": "RECEIPT FOUND",
+      "claim": "you said ranked was easy"
+    },
+    {
+      "id": "synthetic-02",
+      "expected": "RECEIPT FOUND",
+      "claim": "you said you don't solo queue in the middle of the night"
+    },
+    {
+      "id": "synthetic-03",
+      "expected": "RECEIPT FOUND",
+      "claim": "you said your aim is terrible before coffee"
+    },
+    {
+      "id": "synthetic-04",
+      "expected": "RECEIPT FOUND",
+      "claim": "you said the new map is better for sniping"
+    },
+    {
+      "id": "synthetic-05",
+      "expected": "RECEIPT FOUND",
+      "claim": "you said you saved your ultimate for the next fight"
+    },
+    {
+      "id": "synthetic-06",
+      "expected": "RECEIPT FOUND",
+      "claim": "you said the patch reduced your rifle's recoil"
+    },
+    {
+      "id": "synthetic-07",
+      "expected": "RECEIPT FOUND",
+      "claim": "you said the boss is easier if you're nearby"
+    },
+    {
+      "id": "synthetic-08",
+      "expected": "RECEIPT FOUND",
+      "claim": "you said you moved your sensitivity from four to five"
+    },
+    {
+      "id": "synthetic-09",
+      "expected": "NO MATCH",
+      "claim": "you said ranked lobbies are easy even when you're alone"
+    },
+    {
+      "id": "synthetic-10",
+      "expected": "NO MATCH",
+      "claim": "you said you always solo queue after midnight"
+    },
+    {
+      "id": "synthetic-11",
+      "expected": "NO MATCH",
+      "claim": "you said your aim is great before coffee"
+    },
+    {
+      "id": "synthetic-12",
+      "expected": "NO MATCH",
+      "claim": "you said turning motion blur on gives you smoother frames"
+    },
+    {
+      "id": "synthetic-13",
+      "expected": "NO MATCH",
+      "claim": "you said you like support when nobody watches flank"
+    },
+    {
+      "id": "synthetic-14",
+      "expected": "NO MATCH",
+      "claim": "you said you blamed the healer for losing that fight"
+    },
+    {
+      "id": "synthetic-15",
+      "expected": "NO MATCH",
+      "claim": "you said you use the right trigger to aim"
+    },
+    {
+      "id": "synthetic-16",
+      "expected": "NO MATCH",
+      "claim": "you said you already unlocked the gold camo"
+    }
+  ]
+}

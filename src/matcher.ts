@@ -1,7 +1,7 @@
 import type { Receipt, Utterance } from "./model.js";
 
-export interface DecisionThresholds { entailment: number; contradiction: number; }
-export const DEFAULT_THRESHOLDS: DecisionThresholds = { entailment: 0.78, contradiction: 0.72 };
+export interface DecisionThresholds { entailment: number; contradiction: number; negationGuardEntailment: number; onTopicRetrieval: number; }
+export const DEFAULT_THRESHOLDS: DecisionThresholds = { entailment: 0.78, contradiction: 0.72, negationGuardEntailment: 0.975, onTopicRetrieval: 0.30 };
 const stop = new Set("a an the and or but if then than to of in on at for from with by as is was were be been being am are do does did have has had it this that i you he she they we me my your his her their our would could should will can may might honestly really stuff thing said say claim".split(" "));
 const negations = new Set(["not", "never", "no", "without", "neither", "nor", "cannot", "cant", "can't", "dont", "don't", "didnt", "didn't", "wont", "won't", "isnt", "isn't", "wasnt", "wasn't", "hardly", "nobody", "nothing", "nowhere"]);
 const normalize = (text: string) => text.toLowerCase().replace(/\u2019/g, "'").replace(/n['\u2019]t\b/g, " not");
@@ -61,8 +61,11 @@ export interface Candidate {
   utteranceCount: number;
   premise: string;
   retrievalScore: number;
+  lexicalScore: number;
+  semanticScore: number;
   quote: string;
   timestamp: number;
+  quoteEnd: number;
   context: string;
   clipStart: number;
   clipEnd: number;
@@ -92,8 +95,11 @@ export function retrieve(query: string, transcript: Utterance[], queryEmbedding:
         utteranceCount: size,
         premise,
         retrievalScore,
+        lexicalScore: lexical,
+        semanticScore: semantic,
         quote: premise,
         timestamp: rows[0]!.start,
+        quoteEnd: rows.at(-1)!.end,
         context: [before?.text, after?.text].filter(Boolean).join(" … "),
         clipStart: Math.max(0, before?.start ?? rows[0]!.start),
         clipEnd: after?.end ?? rows.at(-1)!.end,
@@ -121,20 +127,24 @@ export function decideVerified(
   const best = [...scored].sort((a, b) => b.probabilities.entailment - a.probabilities.entailment || b.retrievalScore - a.retrievalScore)[0]!;
   const score = Number(best.probabilities.entailment.toFixed(4));
   const record = { candidateId: best.id, retrievalScore: Number(best.retrievalScore.toFixed(4)) };
-  if (best.retrievalScore < 0.18) return { ...base, ...record, outcome: "NO MATCH", status: "pending", score, reason: "No candidate window retrieved" };
+  if (scored.every(candidate => candidate.retrievalScore < 0.05))
+    return { ...base, ...record, outcome: "NO MATCH", status: "pending", score, reason: "No candidate window retrieved" };
 
   // A found decision requires both entailment and low contradiction on the same window.
-  if (best.probabilities.entailment >= thresholds.entailment && best.probabilities.contradiction <= thresholds.contradiction && !best.negationConflict) {
+  const negationVeto = best.negationConflict && best.probabilities.entailment < thresholds.negationGuardEntailment;
+  if (best.probabilities.entailment >= thresholds.entailment && best.probabilities.contradiction <= thresholds.contradiction && !negationVeto) {
     return { ...base, ...record, outcome: "RECEIPT FOUND", status: "pending", score,
       quote: best.quote, timestamp: best.timestamp, context: best.context,
-      clipStart: best.clipStart, clipEnd: best.clipEnd };
+      quoteEnd: best.quoteEnd, clipStart: best.clipStart, clipEnd: best.clipEnd };
   }
 
-  const clearContradiction = [...scored].filter(candidate => candidate.retrievalScore >= 0.18 && candidate.probabilities.contradiction >= thresholds.contradiction)
+  const clearContradiction = [...scored].filter(candidate => candidate.retrievalScore >= thresholds.onTopicRetrieval
+      && (candidate.lexicalScore >= 0.15 || candidate.semanticScore >= 0.65)
+      && candidate.probabilities.contradiction >= thresholds.contradiction
+      && candidate.probabilities.contradiction > candidate.probabilities.neutral)
     .sort((a, b) => b.probabilities.contradiction - a.probabilities.contradiction)[0];
   if (clearContradiction) return { ...base, candidateId: clearContradiction.id, retrievalScore: Number(clearContradiction.retrievalScore.toFixed(4)),
     outcome: "NO MATCH", status: "pending", score: Number(clearContradiction.probabilities.entailment.toFixed(4)), reason: "Retrieved window clearly contradicts the claim" };
-  if (best.probabilities.entailment < 0.18) return { ...base, ...record, outcome: "NO MATCH", status: "pending", score, reason: "No candidate entailed the claim after verification" };
   return { ...base, ...record, outcome: "CAN'T TELL", status: "pending", score,
-    reason: best.negationConflict ? "Negation guard vetoed a potential receipt" : "NLI verification was inconclusive" };
+    reason: negationVeto ? "Negation guard vetoed a low-entailment candidate" : "NLI verification was inconclusive or retrieval was off-topic" };
 }

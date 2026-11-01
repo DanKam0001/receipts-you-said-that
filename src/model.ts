@@ -3,7 +3,7 @@ export interface Utterance { start: number; end: number; text: string; confidenc
 export interface ChatMessage { userId: string; username: string; text: string; isMod: boolean; isBroadcaster: boolean; }
 export interface Receipt {
   id: string; outcome: Outcome; query: string; quote?: string; timestamp?: number;
-  context?: string; clipStart?: number; clipEnd?: number; requester: string; score: number;
+  context?: string; quoteEnd?: number; clipStart?: number; clipEnd?: number; requester: string; score: number;
   decisionMs?: number;
-  status: "pending" | "vetoed" | "played"; reason?: string; candidateId?: string; retrievalScore?: number;
+  status: "pending" | "vetoed" | "played"; reason?: string; candidateId?: string; retrievalScore?: number; vetoUntil?: number;
 }

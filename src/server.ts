@@ -11,18 +11,22 @@ import { decideVerified, DEFAULT_THRESHOLDS, normalizeClaimForNli, retrieve, typ
 import type { ChatMessage, Receipt, Utterance } from "./model.js";
 import { SimulatedChatSource, TwitchChatSource, type ChatSource } from "./twitch.js";
 import { WhisperWorker } from "./transcriber.js";
+import { ReceiptStore } from "./receipt-store.js";
 
 const app = express(); app.use(express.json()); app.use(express.static("public"));
 const http = createServer(app), wss = new WebSocketServer({ server: http });
 const demo = process.argv.includes("--demo");
 let decisionThresholds: DecisionThresholds = DEFAULT_THRESHOLDS;
 try { decisionThresholds = { ...DEFAULT_THRESHOLDS, ...JSON.parse(readFileSync("data/nli-thresholds.json", "utf8")) }; } catch { /* Use defaults until eval writes tune-only thresholds. */ }
-let lives = Number(process.env.RECEIPTS_LIVES ?? 3), optedIn = false;
+const maxLives = Number(process.env.RECEIPTS_LIVES ?? 3);
+let lives = maxLives, optedIn = false;
 let receipt: Receipt | undefined, audioSource: FfmpegPcmSource | undefined, chat: ChatSource;
+let eventsubConnected = false, lifetimeReceiptCount = 0;
 const buffer = new RollingAudioBuffer(180), transcript: Utterance[] = [], clips = new Map<string, Buffer>();
 const clients = new Set<import("ws").WebSocket>();
 
-function snapshot() { return { lives, optedIn, receipt, transcript: transcript.length, embeddingMs: lastEmbeddingLatency, bufferedSeconds: buffer.bufferedSeconds, asr: worker.status, audio: audioSource ? "running" : "stopped", source: chat ? (chat.simulated ? "simulated" : "twitch") : "none", simulated: Boolean(chat?.simulated) }; }
+const receiptStore = new ReceiptStore(resolve("data/receipts"));
+function snapshot() { return { lives, maxLives, optedIn, receipt, transcript: transcript.length, embeddingMs: lastEmbeddingLatency, bufferedSeconds: buffer.bufferedSeconds, asr: worker.status, audio: audioSource ? "running" : "stopped", source: chat ? (chat.simulated ? "simulated" : "twitch") : "none", simulated: Boolean(chat?.simulated), eventsubConnected, lifetimeReceiptCount, holdMs: Number(process.env.RECEIPTS_HOLD_MS ?? 5000) }; }
 function broadcast() { const value = JSON.stringify(snapshot()); for (const c of clients) if (c.readyState === 1) c.send(value); }
 wss.on("connection", c => { clients.add(c); c.send(JSON.stringify(snapshot())); c.on("close", () => clients.delete(c)); });
 
@@ -52,6 +56,14 @@ async function startAudio(mode: "file" | "device", value: string) {
 }
 
 let lastEmbeddingLatency = 0;
+async function archiveReceipt(receiptToSave: Receipt, wavClip: Buffer) {
+  lifetimeReceiptCount = await receiptStore.save({ id: receiptToSave.id, quote: receiptToSave.quote, timestamp: receiptToSave.timestamp,
+    quoteEnd: receiptToSave.quoteEnd, clipStart: receiptToSave.clipStart, clipEnd: receiptToSave.clipEnd, requester: receiptToSave.requester,
+    outcome: "RECEIPT FOUND", score: receiptToSave.score, candidateId: receiptToSave.candidateId,
+    retrievalScore: receiptToSave.retrievalScore }, wavClip);
+  broadcast();
+}
+void receiptStore.list().then(rows => { lifetimeReceiptCount = rows.length; broadcast(); });
 function canVeto(message: ChatMessage) { return message.isMod || message.isBroadcaster; }
 function processChat(message: ChatMessage) {
   const text = message.text.trim();
@@ -91,17 +103,24 @@ async function decideClaim(query: string, username: string, startedAt: number) {
   if (receipt.outcome === "NO MATCH") { lives = Math.max(0, lives - 1); sendReply(`NO MATCH. Chat loses a life. ${lives} remain.`); }
   else if (receipt.outcome === "CAN'T TELL") sendReply("CAN'T TELL. No life lost.");
   else {
-    const wavClip = buffer.clip(receipt.clipStart!, receipt.clipEnd!);
-    if (!wavClip) { receipt.outcome = "CAN'T TELL"; receipt.reason = "The matching audio is no longer in the rolling buffer"; sendReply("CAN'T TELL. Audio is no longer available; no life lost."); }
-    else clips.set(receipt.id, wavClip);
-    if (receipt.outcome === "RECEIPT FOUND") {
+    const foundReceipt = receipt;
+    const wavClip = buffer.clip(foundReceipt.clipStart!, foundReceipt.clipEnd!);
+    if (!wavClip) { foundReceipt.outcome = "CAN'T TELL"; foundReceipt.reason = "The matching audio is no longer in the rolling buffer"; sendReply("CAN'T TELL. Audio is no longer available; no life lost."); }
+    else {
+      clips.set(foundReceipt.id, wavClip);
+      try { await archiveReceipt(foundReceipt, wavClip); }
+      catch (error) { console.error(`[receipts] Could not persist receipt ${foundReceipt.id}: ${(error as Error).message}`); }
+    }
+    if (foundReceipt.outcome === "RECEIPT FOUND") {
       sendReply("RECEIPT FOUND. Mod veto window is open.");
-      const currentId = receipt.id;
+      const currentId = foundReceipt.id;
+      const holdMs = Math.max(0, Number(process.env.RECEIPTS_HOLD_MS ?? 5000));
+      foundReceipt.vetoUntil = Date.now() + holdMs;
       pendingTimer = setTimeout(() => {
         if (receipt?.id !== currentId || receipt.status !== "pending") return;
-        receipt.status = "played"; broadcast();
+        receipt.status = "played"; receipt.vetoUntil = undefined; broadcast();
         setTimeout(() => clips.delete(currentId), 60_000).unref();
-      }, Math.max(0, Number(process.env.RECEIPTS_HOLD_MS ?? 5000)));
+      }, holdMs);
     }
   }
   broadcast();
@@ -110,8 +129,16 @@ let pendingTimer: ReturnType<typeof setTimeout>;
 
 app.get("/", (_req, res) => res.redirect("/overlay.html"));
 app.get("/control", (_req, res) => res.sendFile(resolve("public/control.html")));
+app.get("/receipts", (_req, res) => res.sendFile(resolve("public/receipts.html")));
+app.get("/proof", (_req, res) => res.sendFile(resolve("public/proof.html")));
 app.get("/api/state", (_req, res) => res.json(snapshot()));
-app.get("/api/clip/:id", (req, res) => { const clip = clips.get(req.params.id); if (!clip) return res.sendStatus(404); res.type("audio/wav").send(clip); });
+app.get("/api/clip/:id", async (req, res) => { const clip = clips.get(req.params.id) ?? await receiptStore.clip(req.params.id); if (!clip) return res.sendStatus(404); res.type("audio/wav").send(clip); });
+app.get("/api/receipts", async (_req, res) => res.json(await receiptStore.list()));
+app.get("/api/receipts/:id/clip", async (req, res) => {
+  const clip = await receiptStore.clip(req.params.id);
+  if (!clip) return res.sendStatus(404);
+  res.type("audio/wav").send(clip);
+});
 app.post("/api/opt-in", (_req, res) => { optedIn = !optedIn; res.json(snapshot()); broadcast(); });
 app.post("/api/simulate", (req, res) => {
   if (!demo || !(chat instanceof SimulatedChatSource)) return res.sendStatus(403);
@@ -138,8 +165,8 @@ else if (process.env.TWITCH_CLIENT_ID && process.env.TWITCH_CLIENT_SECRET && pro
   chat = new TwitchChatSource({ clientId: process.env.TWITCH_CLIENT_ID, clientSecret: process.env.TWITCH_CLIENT_SECRET, channel: process.env.TWITCH_CHANNEL });
 else chat = new SimulatedChatSource();
 chat.on("message", (message: ChatMessage) => processChat(message));
-chat.on("ready", () => { console.log("Twitch EventSub chat connected"); broadcast(); });
-chat.on("error", (err: Error) => console.error(`[chat] ${err.message}`));
+chat.on("ready", () => { eventsubConnected = !chat.simulated; console.log(chat.simulated ? "Simulated chat connected" : "Twitch EventSub chat connected"); broadcast(); });
+chat.on("error", (err: Error) => { eventsubConnected = false; console.error(`[chat] ${err.message}`); broadcast(); });
 
 const port = Number(process.env.RECEIPTS_PORT ?? (new URL(process.env.RECEIPTS_REDIRECT_URI ?? "http://localhost:3000").port || 3000));
 http.listen(port, "127.0.0.1", async () => {
