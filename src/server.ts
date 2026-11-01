@@ -26,7 +26,7 @@ let eventsubConnected = false, lifetimeReceiptCount = 0;
 const buffer = new RollingAudioBuffer(180), transcript: Utterance[] = [], clips = new Map<string, Buffer>();
 const clients = new Set<import("ws").WebSocket>();
 
-const receiptStore = new ReceiptStore(resolve("data/receipts"));
+const receiptStore = new ReceiptStore(resolve(process.env.RECEIPTS_DATA_DIR || "data/receipts"));
 function snapshot() { return { lives, maxLives, optedIn, receipt, transcript: transcript.length, embeddingMs: lastEmbeddingLatency, bufferedSeconds: buffer.bufferedSeconds, asr: worker.status, audio: audioSource ? "running" : "stopped", source: chat ? (chat.simulated ? "simulated" : "twitch") : "none", simulated: Boolean(chat?.simulated), scriptedAudio: demo || process.env.RECEIPTS_SCRIPTED_AUDIO === "1", eventsubConnected, lifetimeReceiptCount, holdMs: Number(process.env.RECEIPTS_HOLD_MS ?? 5000) }; }
 function broadcast() { const value = JSON.stringify(snapshot()); for (const c of clients) if (c.readyState === 1) c.send(value); }
 wss.on("connection", c => { clients.add(c); c.send(JSON.stringify(snapshot())); c.on("close", () => clients.delete(c)); });
