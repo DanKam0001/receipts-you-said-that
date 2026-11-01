@@ -3,7 +3,7 @@ import { resetReplaySession, RollingAudioBuffer } from "../src/audio.js";
 import { decideVerified, normalizeClaimForNli, retrieve, type Candidate, type NliProbabilities } from "../src/matcher.js";
 import type { Utterance } from "../src/model.js";
 import { fitQuote, receiptCountLabel } from "../src/overlay-layout.js";
-import { ANNOUNCER_FILES, announcerForOutcome, maySettle, replayCooldownRemaining, selectReplayReceipt } from "../src/show-control.js";
+import { ANNOUNCER_FILES, announcerForOutcome, hallOfShameReply, maySettle, replayCooldownRemaining, replayReceiptPosition, selectReplayReceipt } from "../src/show-control.js";
 
 let count = 0;
 function test(name: string, body: () => void) { body(); count++; console.log(`ok ${count} - ${name}`); }
@@ -44,6 +44,13 @@ test("hall of shame replay selection rejects pending and vetoed receipts", () =>
   assert.equal(selectReplayReceipt(rows)?.id, "new");
   assert.equal(selectReplayReceipt(rows, 1)?.id, "old");
   assert.equal(selectReplayReceipt(rows, 3), undefined);
+});
+
+test("hall of shame chat reply uses the current-session receipt position, never an ID", () => {
+  const played = [{ status: "played" }, { status: "played" }] as const;
+  assert.equal(replayReceiptPosition(played, played[0]), 1);
+  assert.equal(hallOfShameReply(1), "Hall of shame, receipt 1.");
+  assert.doesNotMatch(hallOfShameReply(1), /[0-9a-f]{8}-[0-9a-f-]{27}/i);
 });
 
 test("hall of shame replay cooldown reports remaining time", () => {

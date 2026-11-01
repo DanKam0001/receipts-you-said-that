@@ -13,7 +13,7 @@ import { SimulatedChatSource, TwitchChatSource, type ChatSource } from "./twitch
 import { WhisperWorker } from "./transcriber.js";
 import { ReceiptStore } from "./receipt-store.js";
 import { refineFoundReceipt } from "./receipt-refinement.js";
-import { ANNOUNCER_FILES, announcerForOutcome, maySettle, replayCooldownRemaining, selectReplayReceipt, type AnnouncerFile } from "./show-control.js";
+import { ANNOUNCER_FILES, announcerForOutcome, hallOfShameReply, maySettle, replayCooldownRemaining, replayReceiptPosition, selectReplayReceipt, type AnnouncerFile } from "./show-control.js";
 
 const app = express(); app.use(express.json()); app.use(express.static("public"));
 const http = createServer(app), wss = new WebSocketServer({ server: http });
@@ -30,7 +30,7 @@ let playedReceipts: Receipt[] = [];
 let lastReplayStartedAt: number | undefined;
 let activeReplayReceiptId: string | undefined;
 let announcerEvent: { id: string; file: AnnouncerFile } | undefined;
-let overlayPlayback: { requestId: string; kind: "receipt" | "replay"; playing: boolean; receipt: Receipt; clipUrl: string } | undefined;
+let overlayPlayback: { requestId: string; kind: "receipt" | "replay"; playing: boolean; completedAt?: number; previousReceiptId?: string; receipt: Receipt; clipUrl: string } | undefined;
 let stopPlaybackRequest: string | undefined;
 const clients = new Set<import("ws").WebSocket>();
 
@@ -134,8 +134,8 @@ async function beginReplay(selected: Receipt) {
   activeReplayReceiptId = selected.id;
   stopPlaybackRequest = undefined;
   const replayReceipt = { ...selected, quoteWords: selected.quoteWords ? [...selected.quoteWords] : undefined };
-  overlayPlayback = { requestId: randomUUID(), kind: "replay", playing: true, receipt: replayReceipt, clipUrl: `/api/clip/${encodeURIComponent(selected.id)}` };
-  sendReply(`Playing receipt ${selected.id} from the hall of shame.`);
+  overlayPlayback = { requestId: randomUUID(), kind: "replay", playing: true, previousReceiptId: receipt?.id, receipt: replayReceipt, clipUrl: `/api/clip/${encodeURIComponent(selected.id)}` };
+  sendReply(hallOfShameReply(replayReceiptPosition(playedReceipts, selected)));
   broadcast();
 }
 
@@ -224,7 +224,7 @@ app.post("/api/playback/complete", (req, res) => {
   if (overlayPlayback?.requestId === requestId) {
     if (overlayPlayback.kind === "replay" && activeReplayReceiptId === overlayPlayback.receipt.id) activeReplayReceiptId = undefined;
     if (overlayPlayback.kind === "receipt" && overlayPlayback.receipt.status === "played") onRecordReceipt = overlayPlayback.receipt;
-    overlayPlayback = { ...overlayPlayback, playing: false };
+    overlayPlayback = { ...overlayPlayback, playing: false, completedAt: Date.now() };
   }
   if (stopPlaybackRequest === requestId) { stopPlaybackRequest = undefined; overlayPlayback = undefined; }
   broadcast(); res.json({ ok: true });

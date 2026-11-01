@@ -76,14 +76,15 @@ function postPlaybackComplete(requestId) {
 function finishTask(generation, task, playedToEnd) {
   if (generation !== audioGeneration || currentTask !== task) return;
   clearTimeout(taskTimer); player.onended = null; player.onerror = null; currentTask = undefined;
-  if (task.completeRequestId) postPlaybackComplete(task.completeRequestId);
   if (playedToEnd && task.after) audioQueue.unshift(task.after);
+  else if (task.completeRequestId) postPlaybackComplete(task.completeRequestId);
+  else if (!playedToEnd && task.fallbackCompleteRequestId) postPlaybackComplete(task.fallbackCompleteRequestId);
   wave.classList.remove("visible"); pumpAudio();
 }
 async function pumpAudio() {
   if (currentTask || !audioQueue.length) return;
   const task = audioQueue.shift();
-  if (task.kind === "announcer" && !window.announcerEnabled) { pumpAudio(); return; }
+  if (task.kind === "announcer" && !window.announcerEnabled) { if (task.completeRequestId) postPlaybackComplete(task.completeRequestId); pumpAudio(); return; }
   currentTask = task; const generation = audioGeneration;
   player.onended = () => finishTask(generation, task, true);
   player.onerror = () => finishTask(generation, task, false);
@@ -102,8 +103,8 @@ function enqueuePlayback(playback) {
   lastPlaybackRequest = playback.requestId;
   const tasks = [];
   if (playback.kind === "replay") tasks.push({ kind: "announcer", url: "/announcer/replay.mp3" });
-  tasks.push({ kind: "clip", url: playback.clipUrl, completeRequestId: playback.requestId,
-    after: { kind: "announcer", url: "/announcer/played.mp3" } });
+  tasks.push({ kind: "clip", url: playback.clipUrl, fallbackCompleteRequestId: playback.requestId,
+    after: { kind: "announcer", url: "/announcer/played.mp3", completeRequestId: playback.requestId } });
   audioQueue.push(...tasks); pumpAudio();
 }
 function stopAudioForVeto(requestId) {
@@ -114,17 +115,26 @@ function stopAudioForVeto(requestId) {
 }
 function renderPanel(state) {
   const receipt = state.receipt;
-  const replay = state.overlayPlayback?.kind === "replay" && state.overlayPlayback.receipt.status === "played" &&
-    (state.overlayPlayback.playing || !receipt || state.overlayPlayback.receipt.id === receipt.id) ? state.overlayPlayback : undefined;
-  const selected = replay?.receipt ?? receipt;
-  const key = replay ? `hall:${replay.requestId}` : selected ? `${selected.id}:${selected.outcome}:${selected.status}` : "none";
+  const playback = state.overlayPlayback, now = Date.now();
+  const replay = playback?.kind === "replay" && playback.receipt.status === "played" ? playback : undefined;
+  const playbackInGrace = playback?.completedAt !== undefined && now < playback.completedAt + 2000;
+  let selected, showReplay = false;
+  if (replay) {
+    if (receipt && receipt.id !== replay.receipt.id && receipt.id !== replay.previousReceiptId) selected = receipt;
+    else if (replay.playing || playbackInGrace) { selected = replay.receipt; showReplay = true; }
+  } else if (playback?.kind === "receipt" && playback.completedAt !== undefined && playback.receipt.status === "played") {
+    if (receipt?.id !== playback.receipt.id) selected = receipt;
+    else if (playbackInGrace) selected = playback.receipt;
+  } else selected = receipt;
+  const showPlaybackGrace = playbackInGrace && selected?.id === playback?.receipt.id && (showReplay || playback?.kind === "receipt");
+  const key = showReplay ? `hall:${playback.requestId}:${playback.completedAt ?? "playing"}` : selected ? `${selected.id}:${selected.outcome}:${selected.status}:${showPlaybackGrace ? playback.completedAt : "result"}` : "none";
   if (key === lastPanelKey) return;
   lastPanelKey = key; clearTimeout(clearTimer);
-  if (!selected) { panel.style.display = "none"; $("#idle").style.display = "block"; updateRecord(state); return; }
+  if (!selected) { panel.style.display = "none"; stamp.style.display = "none"; hallLabel.style.display = "none"; $("#idle").style.display = "block"; updateRecord(state); return; }
   $("#idle").style.display = "none"; panel.style.display = "block";
-  stamp.style.display = replay ? "none" : "block"; hallLabel.style.display = replay ? "block" : "none";
+  stamp.style.display = showReplay ? "none" : "block"; hallLabel.style.display = showReplay ? "block" : "none";
   stamp.textContent = selected.outcome; stamp.className = `stamp ${selected.outcome === "RECEIPT FOUND" ? "found" : selected.outcome === "NO MATCH" ? "miss" : "uncertain"}`;
-  if (!replay && lastReceiptId !== selected.id) { lastReceiptId = selected.id; stamp.classList.remove("slam"); void stamp.offsetWidth; stamp.classList.add("slam"); }
+  if (!showReplay && lastReceiptId !== selected.id) { lastReceiptId = selected.id; stamp.classList.remove("slam"); void stamp.offsetWidth; stamp.classList.add("slam"); }
   claimLine.style.display = "block"; claimLine.textContent = `${selected.requester}: “${selected.query}”`;
   activeReceipt = selected;
   if (selected.outcome === "RECEIPT FOUND" && selected.quote) {
@@ -135,7 +145,12 @@ function renderPanel(state) {
     reasonIcon.classList.toggle("visible", selected.outcome === "NO MATCH"); reasonText.textContent = selected.outcome === "NO MATCH" ? "No match. Chat loses a life." : "Can't tell. No life lost.";
     meta.textContent = `ENTAILMENT ${Number(selected.score ?? 0).toFixed(3)} · ${selected.candidateId ?? "NO CANDIDATE"}`;
   }
-  clearTimer = setTimeout(() => { panel.style.display = "none"; $("#idle").style.display = "block"; updateRecord(window.lastState); }, 18_000);
+  if (showPlaybackGrace) {
+    clearTimer = setTimeout(() => { panel.style.display = "none"; stamp.style.display = "none"; hallLabel.style.display = "none"; $("#idle").style.display = "block"; lastPanelKey = ""; updateRecord(window.lastState); }, Math.max(0, playback.completedAt + 2000 - now));
+  } else if (!(playback?.playing && selected.id === playback.receipt.id)) {
+    const resultDuration = selected.outcome === "NO MATCH" || selected.outcome === "CAN'T TELL" ? 6000 : 18_000;
+    clearTimer = setTimeout(() => { panel.style.display = "none"; stamp.style.display = "none"; hallLabel.style.display = "none"; $("#idle").style.display = "block"; updateRecord(window.lastState); }, resultDuration);
+  }
   updateRecord(state);
 }
 function updateRecord(state) {

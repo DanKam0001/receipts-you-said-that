@@ -16,6 +16,14 @@ export function selectReplayReceipt<T extends Pick<Receipt, "status">>(receipts:
   return played[ordinal - 1];
 }
 
+export function replayReceiptPosition<T extends Pick<Receipt, "status">>(receipts: readonly T[], selected: T): number {
+  return receipts.filter(item => item.status === "played").findIndex(item => item === selected) + 1;
+}
+
+export function hallOfShameReply(position: number): string {
+  return `Hall of shame, receipt ${position}.`;
+}
+
 export function replayCooldownRemaining(lastStartedAt: number | undefined, now: number, cooldownSeconds: number): number {
   if (lastStartedAt === undefined) return 0;
   return Math.max(0, Math.ceil((lastStartedAt + Math.max(0, cooldownSeconds) * 1000 - now) / 1000));
