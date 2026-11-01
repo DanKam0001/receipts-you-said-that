@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { performance } from "node:perf_hooks";
 import { FfmpegPcmSource, wav } from "../src/audio.js";
 
 await mkdir(".tmp", { recursive: true });
@@ -18,5 +19,17 @@ assert.equal(await ended, 0);
 assert.equal(chunks, 1);
 assert.deepEqual(received, original);
 assert.equal(source.listenerCount("error"), 1);
+const fastSource = new FfmpegPcmSource(path, "file", { realtime: false });
+let fastReceived = Buffer.alloc(0);
+const fastStarted = performance.now();
+const fastEnded = new Promise<number>((resolve, reject) => {
+  fastSource.on("chunk", chunk => { fastReceived = Buffer.concat([fastReceived, chunk.pcm]); });
+  fastSource.on("end", code => resolve(code));
+  fastSource.on("error", reject);
+});
+await fastSource.start();
+assert.equal(await fastEnded, 0);
+assert.deepEqual(fastReceived, original);
+assert.ok(performance.now() - fastStarted < 200, "eval-only replay mode should not wait for the WAV duration");
 await unlink(path);
-console.log("ok - normalized WAV replay emits identical PCM and closes cleanly");
+console.log("ok - normalized WAV replay emits identical PCM in real-time and accelerated modes");

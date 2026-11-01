@@ -11,7 +11,7 @@ export class FfmpegPcmSource extends EventEmitter implements AudioSource {
   private sampleCursor = 0;
   private replayTimer?: ReturnType<typeof setTimeout>;
   private stopped = false;
-  constructor(private readonly input: string, private readonly mode: "file" | "device") { super(); }
+  constructor(private readonly input: string, private readonly mode: "file" | "device", private readonly options: { realtime?: boolean } = {}) { super(); }
   async start() {
     this.stopped = false;
     this.sampleCursor = 0;
@@ -22,7 +22,7 @@ export class FfmpegPcmSource extends EventEmitter implements AudioSource {
       if (pcm) { this.feedRealtime(pcm); return; }
     }
     const args = this.mode === "file"
-      ? ["-hide_banner", "-loglevel", "error", "-re", "-i", resolve(this.input), "-vn", "-f", "s16le", "-ac", "1", "-ar", "16000", "pipe:1"]
+      ? ["-hide_banner", "-loglevel", "error", ...(this.options.realtime === false ? [] : ["-re"]), "-i", resolve(this.input), "-vn", "-f", "s16le", "-ac", "1", "-ar", "16000", "pipe:1"]
       : ["-hide_banner", "-loglevel", "error", "-f", "dshow", "-i", `audio=${this.input}`, "-f", "s16le", "-ac", "1", "-ar", "16000", "pipe:1"];
     if (this.mode === "file" && !existsSync(this.input)) throw new Error(`Replay file not found: ${this.input}`);
     try { this.proc = spawn(process.env.FFMPEG_PATH ?? "ffmpeg", args, { windowsHide: true }); }
@@ -60,7 +60,8 @@ export class FfmpegPcmSource extends EventEmitter implements AudioSource {
       const start = this.sampleCursor / 16000;
       this.sampleCursor += chunk.length / 2;
       this.emit("chunk", { start, end: this.sampleCursor / 16000, pcm: chunk });
-      this.replayTimer = setTimeout(pump, chunk.length / 32000 * 1000);
+      if (this.options.realtime === false) setImmediate(pump);
+      else this.replayTimer = setTimeout(pump, chunk.length / 32000 * 1000);
     };
     pump();
   }

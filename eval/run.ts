@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -10,104 +10,140 @@ import { WhisperWorker } from "../src/transcriber.js";
 
 interface Claim { id: string; split: "tune" | "held_out"; expected: "RECEIPT FOUND" | "NO MATCH"; claim: string; }
 interface Trial { outcome: string; score: number; latency: number; }
-const claims = JSON.parse(await readFile("eval/claims.json", "utf8")) as Claim[];
-const sourcePath = resolve("data/replay.wav"), referencePath = resolve("data/alice_reference.txt");
-const resultPath = resolve("eval/RESULTS.md");
-const fastEmbedPath = resolve(".venv/Lib/site-packages/fastembed");
+interface TranscriptCache { version: 1; sourceBytes: number; sourceMtimeMs: number; asrModel: string; device: string; meanRtf: number; transcript: Utterance[]; }
+const resultPath = resolve("eval/RESULTS.md"), sourcePath = resolve("data/replay.wav"), referencePath = resolve("data/alice_reference.txt");
+const cachePath = resolve("data/eval-transcript-cache.json"), fastEmbedPath = resolve(".venv/Lib/site-packages/fastembed");
+let evaluationClaims: Claim[] = [];
+let activeWorker: WhisperWorker | undefined, activeSource: FfmpegPcmSource | undefined;
 
-function blocked(reason: string) {
-  const report = `# Evaluation results\n\nRun date: ${new Date().toISOString()}\n\n## Status: BLOCKED\n\n${reason}\n\nThe 30 labelled claims are in [claims.json](claims.json), split into 15 threshold-tuning claims and 15 held-out claims. No matcher score was used while authoring them. Because the real transcript and embeddings were not produced, no threshold sweep was run and no outcome, WER, accuracy, wrong-FOUND, or latency number is reported.\n\nReplay fixture preparation did succeed: ${existsSync(sourcePath) ? "data/replay.wav exists (16 kHz mono real LibriVox speech with deterministic noise)." : "the replay WAV is missing."} The separate local E2E attempt also encountered Node spawn EPERM when starting Python, and a direct faster-whisper startup could not write its temporary model download under D:/hf_cache/faster-whisper. The full run command is npm run eval.\n`;
-  return writeFile(resultPath, report, "utf8");
-}
-
-if (!existsSync(sourcePath) || !existsSync(referencePath)) {
-  await blocked("Replay/reference fixtures are missing. Run `.venv\\Scripts\\python.exe eval\\prepare.py` first.");
-  console.error("Evaluation fixtures missing; see eval/RESULTS.md"); process.exit(2);
-}
-if (!existsSync(fastEmbedPath)) {
-  await blocked("The existing `.venv` does not contain FastEmbed. The required package is already listed in `asr/requirements.txt`; per workspace instructions this runner does not install packages. Install that requirements file, then rerun. This blocks semantic embeddings and therefore the real claim evaluation.");
-  console.error("FastEmbed is missing from the existing .venv; see eval/RESULTS.md"); process.exit(2);
-}
-if (claims.length !== 30 || claims.filter(c => c.split === "tune").length !== 15 || claims.filter(c => c.split === "held_out").length !== 15) {
-  throw new Error("Expected 30 claims split evenly into tune and held_out");
+async function writeBlocked(reason: string) {
+  if (!evaluationClaims.length && existsSync("eval/claims.json")) {
+    try { evaluationClaims = JSON.parse(await readFile("eval/claims.json", "utf8")) as Claim[]; } catch { /* Preserve the primary evaluation failure. */ }
+  }
+  const held = evaluationClaims.filter(claim => claim.split === "held_out");
+  const rows = held.map(claim => `| ${claim.id} | ${claim.claim.replaceAll("|", "\\|")} | ${claim.expected} | N/A | N/A |`).join("\n");
+  const table = held.length ? `\n\n## Held-out claims\n\n| ID | Claim | Expected | Actual | Score |\n|---|---|---|---|---:|\n${rows}` : "";
+  await writeFile(resultPath, `# Evaluation results\n\nRun date: ${new Date().toISOString()}\n\n## Status: BLOCKED\n\n${reason}\n\nNo evaluation metrics are reported for this blocked run. Transcript cache: ${existsSync(cachePath) ? "present but not verified/used" : "not present"}. The replay fixture ${existsSync(sourcePath) ? "is present" : "is missing"}.${table}\n`, "utf8");
 }
 
-const worker = new WhisperWorker();
-const transcript: Utterance[] = [];
-let readyResolve!: () => void;
-let readyReject!: (error: Error) => void;
-let isReady = false;
-const ready = new Promise<void>((res, rej) => { readyResolve = res; readyReject = rej; });
-worker.on("ready", info => { isReady = true; console.log(`ASR ready: ${info}`); readyResolve(); });
-worker.on("transcript", (rows: Utterance[]) => transcript.push(...rows));
-worker.on("error", (error: Error) => { console.error(`[ASR] ${error.message}`); if (!isReady) readyReject(error); });
-try { worker.start(); } catch (error) { await blocked(`The Node process cannot launch the faster-whisper child process here (${(error as Error).message}). No transcript or decision metrics were produced.`); console.error("Speech sidecar could not start; see eval/RESULTS.md"); process.exit(2); }
-const source = new FfmpegPcmSource(sourcePath, "file");
-let expectedChunks = 0, completedChunks = 0, sourceEnded = false;
-worker.on("chunkTranscribed", () => { completedChunks++; });
-worker.on("chunkFailed", () => { completedChunks++; });
-const done = new Promise<void>((resolveDone, rejectDone) => {
-  const check = () => { if (sourceEnded && completedChunks >= expectedChunks) resolveDone(); };
-  source.on("chunk", (chunk: { start: number; end: number; pcm: Buffer }) => { expectedChunks++; worker.submit({ start: chunk.start, pcm: chunk.pcm }); });
-  source.on("end", code => { if (code !== 0) rejectDone(new Error(`Replay ended with code ${code}`)); sourceEnded = true; check(); });
-  source.on("error", rejectDone);
-  worker.on("chunkTranscribed", check); worker.on("chunkFailed", check);
+async function waitForReady(worker: WhisperWorker) {
+  await new Promise<void>((resolveReady, rejectReady) => {
+    let settled = false;
+    const finish = (error?: Error) => { if (settled) return; settled = true; clearTimeout(timer); worker.off("ready", onReady); worker.off("error", onError); error ? rejectReady(error) : resolveReady(); };
+    const onReady = () => finish();
+    const onError = (error: Error) => { if (worker.status.state !== "ready") finish(error); };
+    const timer = setTimeout(() => finish(new Error("ASR sidecar startup timed out after 15 minutes")), 900_000);
+    worker.on("ready", onReady); worker.on("error", onError);
+    if (worker.status.state === "ready") finish();
+  });
+}
+
+async function main() {
+  evaluationClaims = JSON.parse(await readFile("eval/claims.json", "utf8")) as Claim[];
+  if (!existsSync(sourcePath) || !existsSync(referencePath)) throw new Error("Replay/reference fixtures are missing; run .venv\\Scripts\\python.exe eval\\prepare.py first");
+  if (!existsSync(fastEmbedPath)) throw new Error("FastEmbed is missing from the existing .venv; install the packages already listed in asr/requirements.txt");
+  const tune = evaluationClaims.filter(claim => claim.split === "tune"), held = evaluationClaims.filter(claim => claim.split === "held_out");
+  if (evaluationClaims.length !== 30 || tune.length !== 15 || held.length !== 15) throw new Error("Expected 30 claims split evenly into tune and held_out");
+
+  const sourceStats = await stat(sourcePath), asrModel = process.env.RECEIPTS_ASR_MODEL ?? "small.en";
+  const fast = process.argv.includes("--fast");
+  let transcript: Utterance[] = [], cacheUsed = false, device = "unknown", meanRtf = 0;
+  if (existsSync(cachePath)) {
+    const cached = JSON.parse(await readFile(cachePath, "utf8")) as TranscriptCache;
+    if (cached.version === 1 && cached.sourceBytes === sourceStats.size && cached.sourceMtimeMs === sourceStats.mtimeMs && cached.asrModel === asrModel) {
+      transcript = cached.transcript; cacheUsed = true; device = cached.device; meanRtf = cached.meanRtf;
+    }
+  }
+
+  const worker = new WhisperWorker(); activeWorker = worker;
+  const transcribeRtfs: number[] = [], chunkFailures: string[] = [];
+  worker.on("transcript", (rows: Utterance[]) => transcript.push(...rows));
+  worker.on("chunkTranscribed", (_start: number, _elapsedMs?: number, rtf?: number) => { if (rtf !== undefined) transcribeRtfs.push(rtf); });
+  worker.on("chunkFailed", (start: number, error: Error) => chunkFailures.push(`audio at ${start.toFixed(1)}s: ${error.message}`));
+  worker.on("log", message => console.log(`[ASR] ${message}`));
+  worker.on("error", error => console.error(`[ASR] ${error.message}`));
+  worker.start();
+  await waitForReady(worker);
+  device = worker.status.device ?? "unknown";
+
+  if (!cacheUsed) {
+    const startedAt = performance.now();
+    const source = new FfmpegPcmSource(sourcePath, "file", { realtime: !fast }); activeSource = source;
+    let expectedChunks = 0, completedChunks = 0, ended = false;
+    await new Promise<void>((resolveDone, rejectDone) => {
+      const check = () => { if (ended && completedChunks >= expectedChunks) resolveDone(); };
+      source.on("chunk", chunk => { expectedChunks++; worker.submit(chunk); });
+      worker.on("chunkTranscribed", check); worker.on("chunkFailed", check);
+      source.on("end", code => { if (code !== 0) rejectDone(new Error(`Replay source ended with code ${code}`)); ended = true; check(); });
+      source.on("error", rejectDone);
+      void source.start().catch(rejectDone);
+    });
+    if (chunkFailures.length) throw new Error(`Transcription failed for ${chunkFailures.length} chunk(s): ${chunkFailures.join("; ")}`);
+    const elapsedSeconds = (performance.now() - startedAt) / 1000;
+    meanRtf = transcribeRtfs.length ? transcribeRtfs.reduce((sum, value) => sum + value, 0) / transcribeRtfs.length : 0;
+    await source.stop(); activeSource = undefined;
+    await writeFile(cachePath, JSON.stringify({ version: 1, sourceBytes: sourceStats.size, sourceMtimeMs: sourceStats.mtimeMs,
+      asrModel, device, meanRtf, transcript } satisfies TranscriptCache));
+  }
+
+  const vectors = new Map<string, { vector: number[]; latency: number }>();
+  for (const claim of evaluationClaims) {
+    const started = performance.now();
+    vectors.set(claim.id, { vector: await worker.embed(claim.claim), latency: performance.now() - started });
+  }
+  const runTrial = (claim: Claim, thresholds: Thresholds): Trial => {
+    const cached = vectors.get(claim.id)!; const started = performance.now();
+    const result = decide(claim.claim, transcript, "eval", randomUUID(), cached.vector, thresholds);
+    return { outcome: result.outcome, score: result.score, latency: cached.latency + performance.now() - started };
+  };
+  const grid: Thresholds[] = [];
+  for (let found = 0.45; found <= 0.8501; found += 0.05)
+    for (let miss = 0.10; miss <= Math.min(0.40, found - 0.1); miss += 0.05) grid.push({ found: Number(found.toFixed(2)), miss: Number(miss.toFixed(2)) });
+  let chosen: Thresholds = { found: 0.62, miss: 0.28 }, bestCorrect = -1;
+  for (const thresholds of grid) {
+    const trials = tune.map(claim => runTrial(claim, thresholds));
+    const falseFound = trials.filter((trial, index) => tune[index]!.expected === "NO MATCH" && trial.outcome === "RECEIPT FOUND").length;
+    const correct = trials.filter((trial, index) => trial.outcome === tune[index]!.expected).length;
+    if (falseFound === 0 && correct > bestCorrect) { chosen = thresholds; bestCorrect = correct; }
+  }
+  const tuneTrials = tune.map(claim => runTrial(claim, chosen)), heldTrials = held.map(claim => runTrial(claim, chosen));
+  const allTrials = [...tuneTrials, ...heldTrials];
+
+  const referenceText = await readFile(referencePath, "utf8");
+  const chapterStarts = [...referenceText.matchAll(/\n\s*CHAPTER I\.\s*/gi)];
+  const firstChapter = chapterStarts.length > 1 ? chapterStarts[1]!.index! : -1;
+  const nextChapter = referenceText.indexOf("CHAPTER II.", firstChapter + 10);
+  const tokens = (text: string) => text.toLowerCase().replace(/[^a-z0-9']+/g, " ").trim().split(/\s+/).filter(Boolean);
+  const referenceTokens = tokens(referenceText.slice(firstChapter, nextChapter));
+  const transcriptTokens = tokens(transcript.map(row => row.text).join(" "));
+  let previous = Array.from({ length: transcriptTokens.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= referenceTokens.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= transcriptTokens.length; j++) row[j] = Math.min(row[j - 1]! + 1, previous[j]! + 1, previous[j - 1]! + (referenceTokens[i - 1] === transcriptTokens[j - 1] ? 0 : 1));
+    previous = row;
+  }
+  const wer = referenceTokens.length ? previous[transcriptTokens.length]! / referenceTokens.length : NaN;
+  const counts = (trials: Trial[]) => Object.fromEntries(["RECEIPT FOUND", "NO MATCH", "CAN'T TELL"].map(outcome => [outcome, trials.filter(trial => trial.outcome === outcome).length]));
+  const heldCounts = counts(heldTrials), overallCounts = counts(allTrials);
+  const heldWrongFound = heldTrials.filter((trial, index) => held[index]!.expected === "NO MATCH" && trial.outcome === "RECEIPT FOUND").length;
+  const overallCorrect = allTrials.filter((trial, index) => trial.outcome === evaluationClaims[index]!.expected).length;
+  const latencies = allTrials.map(trial => trial.latency).sort((a, b) => a - b);
+  const meanLatency = allTrials.reduce((sum, trial) => sum + trial.latency, 0) / allTrials.length;
+  const p95 = latencies[Math.min(latencies.length - 1, Math.ceil(latencies.length * 0.95) - 1)] ?? 0;
+  const heldRows = held.map((claim, index) => `| ${claim.id} | ${claim.claim.replaceAll("|", "\\|")} | ${claim.expected} | ${heldTrials[index]!.outcome} | ${heldTrials[index]!.score.toFixed(4)} |`).join("\n");
+  const targetMet = heldWrongFound === 0 && overallCorrect >= 21;
+  const replayMode = cacheUsed ? "skipped; validated cached transcript reused" : fast ? "accelerated eval-only (--fast); same PCM chunks and transcript path" : "real time (default)";
+  const report = `# Evaluation results\n\nRun date: ${new Date().toISOString()}\n\n## Status: COMPLETE\n\n- Replay mode: ${replayMode}.\n- Transcript cache used: ${cacheUsed ? "yes" : "no; this run wrote data/eval-transcript-cache.json"}.\n- ASR: ${device}; model ${asrModel}; transcript chunks ${transcript.length}; mean chunk real-time factor ${meanRtf.toFixed(3)} (below 1.0 keeps pace).\n- Thresholds chosen on tune half only: found ${chosen.found.toFixed(2)}, miss ${chosen.miss.toFixed(2)}; tune correct ${bestCorrect}/15 with zero tune false FOUND.\n\n## Held-out results (n=15)\n\n- Outcome counts: RECEIPT FOUND ${heldCounts["RECEIPT FOUND"]}, NO MATCH ${heldCounts["NO MATCH"]}, CAN'T TELL ${heldCounts["CAN'T TELL"]}.\n- All-30 outcome counts: RECEIPT FOUND ${overallCounts["RECEIPT FOUND"]}, NO MATCH ${overallCounts["NO MATCH"]}, CAN'T TELL ${overallCounts["CAN'T TELL"]}.\n- Correct overall: ${overallCorrect}/30; wrong held-out RECEIPT FOUND: ${heldWrongFound}.\n- WER: ${(wer * 100).toFixed(2)}% (${previous[transcriptTokens.length]} edits / ${referenceTokens.length} reference words).\n- Claim-to-decision latency: mean ${meanLatency.toFixed(1)} ms; p95 ${p95.toFixed(1)} ms.\n- Target (zero wrong held-out FOUND and at least 21/30 correct): ${targetMet ? "MET" : "NOT MET"}.\n\n## Held-out claims\n\n| ID | Claim | Expected | Actual | Score |\n|---|---|---|---|---:|\n${heldRows}\n`;
+  await writeFile(resultPath, report, "utf8");
+  worker.stop(); activeWorker = undefined;
+  console.log(report);
+}
+
+main().catch(async error => {
+  await activeSource?.stop().catch(() => undefined);
+  activeWorker?.stop(); activeWorker = undefined;
+  const reason = `Evaluation failed: ${(error as Error).message}`;
+  await writeBlocked(reason);
+  console.error(reason);
+  process.exitCode = 1;
 });
-let startupTimer: ReturnType<typeof setTimeout> | undefined;
-try { await Promise.race([ready, new Promise<void>((_, reject) => { startupTimer = setTimeout(() => reject(new Error("Speech worker startup timed out")), 900_000); })]); } catch (error) { await blocked(`The faster-whisper sidecar did not become ready (${(error as Error).message}). No transcript or decision metrics were produced.`); console.error("Speech sidecar failed; see eval/RESULTS.md"); process.exit(2); } finally { if (startupTimer) clearTimeout(startupTimer); }
-await source.start();
-console.log("Real-time replay started; waiting for the complete recording and transcript.");
-await done;
-
-const tune = claims.filter(c => c.split === "tune"), held = claims.filter(c => c.split === "held_out");
-const vectors = new Map<string, { vector: number[]; embeddingMs: number }>();
-for (const claim of claims) {
-  const started = performance.now(), vector = await worker.embed(claim.claim);
-  vectors.set(claim.id, { vector, embeddingMs: performance.now() - started });
-}
-const runTrial = (claim: Claim, thresholds: Thresholds): Trial => {
-  const cached = vectors.get(claim.id)!;
-  const started = performance.now();
-  const receipt = decide(claim.claim, transcript, "eval", randomUUID(), cached.vector, thresholds);
-  return { outcome: receipt.outcome, score: receipt.score, latency: cached.embeddingMs + performance.now() - started };
-};
-const grid: Thresholds[] = [];
-for (let found = 0.45; found <= 0.8501; found += 0.05)
-  for (let miss = 0.10; miss <= Math.min(0.40, found - 0.1); miss += 0.05) grid.push({ found: Number(found.toFixed(2)), miss: Number(miss.toFixed(2)) });
-let chosen: Thresholds = { found: 0.62, miss: 0.28 }, bestCorrect = -1;
-for (const thresholds of grid) {
-  const trials = tune.map(c => runTrial(c, thresholds));
-  const falseFound = trials.filter((t, i) => tune[i]!.expected === "NO MATCH" && t.outcome === "RECEIPT FOUND").length;
-  const correct = trials.filter((t, i) => t.outcome === tune[i]!.expected).length;
-  if (falseFound === 0 && correct > bestCorrect) { chosen = thresholds; bestCorrect = correct; }
-}
-const heldTrials = held.map(c => runTrial(c, chosen));
-const tuneTrials = tune.map(c => runTrial(c, chosen));
-const allTrials = [...tuneTrials, ...heldTrials];
-worker.stop();
-const wrongFound = heldTrials.filter((t, i) => held[i]!.expected === "NO MATCH" && t.outcome === "RECEIPT FOUND").length;
-const correct = heldTrials.filter((t, i) => t.outcome === held[i]!.expected).length;
-const counts = Object.fromEntries(["RECEIPT FOUND", "NO MATCH", "CAN'T TELL"].map(outcome => [outcome, heldTrials.filter(t => t.outcome === outcome).length]));
-const overallCounts = Object.fromEntries(["RECEIPT FOUND", "NO MATCH", "CAN'T TELL"].map(outcome => [outcome, allTrials.filter(t => t.outcome === outcome).length]));
-
-function tokens(text: string) { return text.toLowerCase().replace(/[^a-z0-9']+/g, " ").trim().split(/\s+/).filter(Boolean); }
-const referenceText = await readFile(referencePath, "utf8");
-const chapterStarts = [...referenceText.matchAll(/\n\s*CHAPTER I\.\s*/gi)];
-const firstChapter = chapterStarts.length > 1 ? chapterStarts[1]!.index! : -1;
-const nextChapter = referenceText.indexOf("CHAPTER II.", firstChapter + 10);
-const refTokens = tokens(referenceText.slice(firstChapter, nextChapter));
-const hypTokens = tokens(transcript.map(row => row.text).join(" "));
-let prev = Array.from({ length: hypTokens.length + 1 }, (_, i) => i);
-for (let i = 1; i <= refTokens.length; i++) {
-  const row = [i];
-  for (let j = 1; j <= hypTokens.length; j++) row[j] = Math.min(row[j - 1]! + 1, prev[j]! + 1, prev[j - 1]! + (refTokens[i - 1] === hypTokens[j - 1] ? 0 : 1));
-  prev = row;
-}
-const wer = refTokens.length ? prev[hypTokens.length]! / refTokens.length : NaN;
-const latency = allTrials.map(t => t.latency).sort((a, b) => a - b);
-const p95 = latency[Math.min(latency.length - 1, Math.ceil(latency.length * 0.95) - 1)] ?? 0;
-const countWrongFound = heldTrials.filter((t, i) => held[i]!.expected === "NO MATCH" && t.outcome === "RECEIPT FOUND").length;
-const overallCorrect = correct + tuneTrials.filter((t, i) => t.outcome === tune[i]!.expected).length;
-const report = `# Evaluation results\n\nRun date: ${new Date().toISOString()}\n\n## Setup\n\n- Public-domain speech: LibriVox / Internet Archive Chapter 1; real-time replay through FfmpegPcmSource and the faster-whisper sidecar.\n- Noise: deterministic synthesized bed and chirps, seed 20261101.\n- Claims: 15 tuning and 15 held-out; held-out claims were not used for threshold selection.\n- Thresholds selected on tune half: found ${chosen.found.toFixed(2)}, miss ${chosen.miss.toFixed(2)}; tune correct ${bestCorrect}/15 with zero tune false FOUND.\n\n## Held-out results (n=15)\n\n- Outcome counts, held out: RECEIPT FOUND ${counts["RECEIPT FOUND"]}, NO MATCH ${counts["NO MATCH"]}, CAN'T TELL ${counts["CAN'T TELL"]}.\n- Outcome counts, all 30: RECEIPT FOUND ${overallCounts["RECEIPT FOUND"]}, NO MATCH ${overallCounts["NO MATCH"]}, CAN'T TELL ${overallCounts["CAN'T TELL"]}.\n- Correct outcomes: ${correct}/15 held out; ${overallCorrect}/30 overall.\n- Wrong RECEIPT FOUND: ${wrongFound} held out (0 on tune half by threshold selection).\n- Transcript WER against Gutenberg Chapter I: ${(wer * 100).toFixed(2)}% (${prev[hypTokens.length]} edit errors / ${refTokens.length} reference words).\n- Claim-to-decision latency: mean ${(allTrials.reduce((sum, t) => sum + t.latency, 0) / allTrials.length).toFixed(1)} ms, p95 ${p95.toFixed(1)} ms.\n\n## Target\n\n${countWrongFound === 0 && overallCorrect >= 21 ? "Target met (0 wrong FOUND in held-out and at least 21/30 overall)." : "Target not met. Report the actual held-out false FOUND and overall correct counts above; improve without tuning against held-out examples."}\n`;
-await writeFile(resultPath, report, "utf8");
-console.log(report);
