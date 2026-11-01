@@ -11,7 +11,7 @@
     "twitch:check": "npm run build && node dist/src/twitch-check.js",
     "demo": "npm run build && node dist/src/server.js --demo",
     "eval": "npm run build && node dist/eval/run.js",
-    "test": "npm run build && node dist/test/run.js && node dist/test/audio-replay.js && node dist/test/sidecar-restart.js",
+    "test": "npm run build && node dist/test/run.js && node dist/test/audio-replay.js && node dist/test/sidecar-restart.js && node dist/test/replay-completion.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -4,7 +4,7 @@
 
 Per instruction, this workspace did not run `npm run eval` or spawn Python. The previous recorded run was blocked before transcription and produced no valid evaluation metrics. The revised runner supports CPU/CUDA probing, accelerated replay, and transcript caching; those paths still need the requested outside-sandbox run. Do not treat the prior blocked attempt as benchmark data.
 
-WER, outcome counts, wrong FOUND count, latency, threshold selection, and accuracy are **not measured**. The table below preserves all held-out labels and leaves actual outcome and score explicitly unmeasured.
+WER, outcome counts, wrong FOUND count, latency, threshold selection, and accuracy are **not measured**. Mean, p95, and max chunk RTF are also not measured yet; completed evaluation runs will report all three. The table below preserves all held-out labels and leaves actual outcome and score explicitly unmeasured.
 
 | ID | Claim | Expected | Actual | Score |
 |---|---|---|---|---:|

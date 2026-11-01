@@ -7,10 +7,11 @@ import { FfmpegPcmSource } from "../src/audio.js";
 import { decide, type Thresholds } from "../src/matcher.js";
 import type { Utterance } from "../src/model.js";
 import { WhisperWorker } from "../src/transcriber.js";
+import { ReplayCompletion } from "../src/replay-completion.js";
 
 interface Claim { id: string; split: "tune" | "held_out"; expected: "RECEIPT FOUND" | "NO MATCH"; claim: string; }
 interface Trial { outcome: string; score: number; latency: number; }
-interface TranscriptCache { version: 1; sourceBytes: number; sourceMtimeMs: number; asrModel: string; device: string; meanRtf: number; transcript: Utterance[]; }
+interface TranscriptCache { version: 2; sourceBytes: number; sourceMtimeMs: number; asrModel: string; device: string; meanRtf: number; maxRtf: number; p95Rtf: number; transcript: Utterance[]; }
 const resultPath = resolve("eval/RESULTS.md"), sourcePath = resolve("data/replay.wav"), referencePath = resolve("data/alice_reference.txt");
 const cachePath = resolve("data/eval-transcript-cache.json"), fastEmbedPath = resolve(".venv/Lib/site-packages/fastembed");
 let evaluationClaims: Claim[] = [];
@@ -47,11 +48,11 @@ async function main() {
 
   const sourceStats = await stat(sourcePath), asrModel = process.env.RECEIPTS_ASR_MODEL ?? "small.en";
   const fast = process.argv.includes("--fast");
-  let transcript: Utterance[] = [], cacheUsed = false, device = "unknown", meanRtf = 0;
+  let transcript: Utterance[] = [], cacheUsed = false, device = "unknown", meanRtf = 0, maxRtf = 0, p95Rtf = 0;
   if (existsSync(cachePath)) {
     const cached = JSON.parse(await readFile(cachePath, "utf8")) as TranscriptCache;
-    if (cached.version === 1 && cached.sourceBytes === sourceStats.size && cached.sourceMtimeMs === sourceStats.mtimeMs && cached.asrModel === asrModel) {
-      transcript = cached.transcript; cacheUsed = true; device = cached.device; meanRtf = cached.meanRtf;
+    if (cached.version === 2 && cached.sourceBytes === sourceStats.size && cached.sourceMtimeMs === sourceStats.mtimeMs && cached.asrModel === asrModel) {
+      transcript = cached.transcript; cacheUsed = true; device = cached.device; meanRtf = cached.meanRtf; maxRtf = cached.maxRtf; p95Rtf = cached.p95Rtf;
     }
   }
 
@@ -69,21 +70,45 @@ async function main() {
   if (!cacheUsed) {
     const startedAt = performance.now();
     const source = new FfmpegPcmSource(sourcePath, "file", { realtime: !fast }); activeSource = source;
-    let expectedChunks = 0, completedChunks = 0, ended = false;
+    const progress = new ReplayCompletion();
     await new Promise<void>((resolveDone, rejectDone) => {
-      const check = () => { if (ended && completedChunks >= expectedChunks) resolveDone(); };
-      source.on("chunk", chunk => { expectedChunks++; worker.submit(chunk); });
-      worker.on("chunkTranscribed", check); worker.on("chunkFailed", check);
-      source.on("end", code => { if (code !== 0) rejectDone(new Error(`Replay source ended with code ${code}`)); ended = true; check(); });
-      source.on("error", rejectDone);
-      void source.start().catch(rejectDone);
+      let settled = false;
+      let watchdog: ReturnType<typeof setTimeout>;
+      const cleanup = () => { clearTimeout(watchdog); worker.off("chunkTranscribed", onChunkFinished); worker.off("chunkFailed", onChunkFailed); source.off("chunk", onChunk); source.off("end", onEnd); source.off("error", onError); };
+      const finish = (error?: Error) => { if (settled) return; settled = true; cleanup(); error ? rejectDone(error) : resolveDone(); };
+      const armWatchdog = () => {
+        clearTimeout(watchdog);
+        watchdog = setTimeout(() => finish(new Error(`No ASR chunk completed for 120 seconds; queue state: ${JSON.stringify(worker.status)}`)), 120_000);
+      };
+      const check = () => { const state = progress.counts; if (state.ended && state.completed >= state.expected) finish(); };
+      const onChunk = (chunk: Parameters<typeof worker.submit>[0]) => { progress.addChunk(); worker.submit(chunk); };
+      const onChunkFinished = () => {
+        progress.finishChunk(); armWatchdog();
+        if (progress.counts.completed % 10 === 0) console.log(`[eval] Transcribed ${progress.counts.completed}/${progress.counts.expected} chunks; queue ${JSON.stringify(worker.status)}`);
+        check();
+      };
+      const onChunkFailed = (start: number, error: Error) => {
+        chunkFailures.push(`audio at ${start.toFixed(1)}s: ${error.message}`);
+        progress.finishChunk(); armWatchdog();
+        if (progress.counts.completed % 10 === 0) console.log(`[eval] Finished ${progress.counts.completed}/${progress.counts.expected} chunks (${chunkFailures.length} failed); queue ${JSON.stringify(worker.status)}`);
+        check();
+      };
+      const onEnd = (code: number) => { if (code !== 0) { finish(new Error(`Replay source ended with code ${code}`)); return; } progress.end(); check(); };
+      const onError = (error: Error) => finish(error);
+      worker.on("chunkTranscribed", onChunkFinished); worker.on("chunkFailed", onChunkFailed);
+      source.on("chunk", onChunk); source.on("end", onEnd); source.on("error", onError);
+      armWatchdog();
+      void source.start().catch(finish);
     });
     if (chunkFailures.length) throw new Error(`Transcription failed for ${chunkFailures.length} chunk(s): ${chunkFailures.join("; ")}`);
     const elapsedSeconds = (performance.now() - startedAt) / 1000;
     meanRtf = transcribeRtfs.length ? transcribeRtfs.reduce((sum, value) => sum + value, 0) / transcribeRtfs.length : 0;
+    const sortedRtfs = [...transcribeRtfs].sort((a, b) => a - b);
+    maxRtf = sortedRtfs.at(-1) ?? 0;
+    p95Rtf = sortedRtfs[Math.min(sortedRtfs.length - 1, Math.ceil(sortedRtfs.length * 0.95) - 1)] ?? 0;
     await source.stop(); activeSource = undefined;
-    await writeFile(cachePath, JSON.stringify({ version: 1, sourceBytes: sourceStats.size, sourceMtimeMs: sourceStats.mtimeMs,
-      asrModel, device, meanRtf, transcript } satisfies TranscriptCache));
+    await writeFile(cachePath, JSON.stringify({ version: 2, sourceBytes: sourceStats.size, sourceMtimeMs: sourceStats.mtimeMs,
+      asrModel, device, meanRtf, maxRtf, p95Rtf, transcript } satisfies TranscriptCache));
   }
 
   const vectors = new Map<string, { vector: number[]; latency: number }>();
@@ -133,7 +158,7 @@ async function main() {
   const heldRows = held.map((claim, index) => `| ${claim.id} | ${claim.claim.replaceAll("|", "\\|")} | ${claim.expected} | ${heldTrials[index]!.outcome} | ${heldTrials[index]!.score.toFixed(4)} |`).join("\n");
   const targetMet = heldWrongFound === 0 && overallCorrect >= 21;
   const replayMode = cacheUsed ? "skipped; validated cached transcript reused" : fast ? "accelerated eval-only (--fast); same PCM chunks and transcript path" : "real time (default)";
-  const report = `# Evaluation results\n\nRun date: ${new Date().toISOString()}\n\n## Status: COMPLETE\n\n- Replay mode: ${replayMode}.\n- Transcript cache used: ${cacheUsed ? "yes" : "no; this run wrote data/eval-transcript-cache.json"}.\n- ASR: ${device}; model ${asrModel}; transcript chunks ${transcript.length}; mean chunk real-time factor ${meanRtf.toFixed(3)} (below 1.0 keeps pace).\n- Thresholds chosen on tune half only: found ${chosen.found.toFixed(2)}, miss ${chosen.miss.toFixed(2)}; tune correct ${bestCorrect}/15 with zero tune false FOUND.\n\n## Held-out results (n=15)\n\n- Outcome counts: RECEIPT FOUND ${heldCounts["RECEIPT FOUND"]}, NO MATCH ${heldCounts["NO MATCH"]}, CAN'T TELL ${heldCounts["CAN'T TELL"]}.\n- All-30 outcome counts: RECEIPT FOUND ${overallCounts["RECEIPT FOUND"]}, NO MATCH ${overallCounts["NO MATCH"]}, CAN'T TELL ${overallCounts["CAN'T TELL"]}.\n- Correct overall: ${overallCorrect}/30; wrong held-out RECEIPT FOUND: ${heldWrongFound}.\n- WER: ${(wer * 100).toFixed(2)}% (${previous[transcriptTokens.length]} edits / ${referenceTokens.length} reference words).\n- Claim-to-decision latency: mean ${meanLatency.toFixed(1)} ms; p95 ${p95.toFixed(1)} ms.\n- Target (zero wrong held-out FOUND and at least 21/30 correct): ${targetMet ? "MET" : "NOT MET"}.\n\n## Held-out claims\n\n| ID | Claim | Expected | Actual | Score |\n|---|---|---|---|---:|\n${heldRows}\n`;
+  const report = `# Evaluation results\n\nRun date: ${new Date().toISOString()}\n\n## Status: COMPLETE\n\n- Replay mode: ${replayMode}.\n- Transcript cache used: ${cacheUsed ? "yes" : "no; this run wrote data/eval-transcript-cache.json"}.\n- ASR: ${device}; model ${asrModel}; transcript utterances ${transcript.length}; chunk RTF mean ${meanRtf.toFixed(3)}, p95 ${p95Rtf.toFixed(3)}, max ${maxRtf.toFixed(3)} (below 1.0 keeps pace).\n- Thresholds chosen on tune half only: found ${chosen.found.toFixed(2)}, miss ${chosen.miss.toFixed(2)}; tune correct ${bestCorrect}/15 with zero tune false FOUND.\n\n## Held-out results (n=15)\n\n- Outcome counts: RECEIPT FOUND ${heldCounts["RECEIPT FOUND"]}, NO MATCH ${heldCounts["NO MATCH"]}, CAN'T TELL ${heldCounts["CAN'T TELL"]}.\n- All-30 outcome counts: RECEIPT FOUND ${overallCounts["RECEIPT FOUND"]}, NO MATCH ${overallCounts["NO MATCH"]}, CAN'T TELL ${overallCounts["CAN'T TELL"]}.\n- Correct overall: ${overallCorrect}/30; wrong held-out RECEIPT FOUND: ${heldWrongFound}.\n- WER: ${(wer * 100).toFixed(2)}% (${previous[transcriptTokens.length]} edits / ${referenceTokens.length} reference words).\n- Claim-to-decision latency: mean ${meanLatency.toFixed(1)} ms; p95 ${p95.toFixed(1)} ms.\n- Target (zero wrong held-out FOUND and at least 21/30 correct): ${targetMet ? "MET" : "NOT MET"}.\n\n## Held-out claims\n\n| ID | Claim | Expected | Actual | Score |\n|---|---|---|---|---:|\n${heldRows}\n`;
   await writeFile(resultPath, report, "utf8");
   worker.stop(); activeWorker = undefined;
   console.log(report);

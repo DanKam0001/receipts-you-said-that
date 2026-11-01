@@ -8,6 +8,18 @@ import time
 os.environ.setdefault("HF_HOME", "D:/hf_cache")
 os.environ.setdefault("FASTEMBED_CACHE_PATH", "D:/hf_cache/fastembed")
 
+# CTranslate2 loads CUDA DLLs lazily. Make an optional local CUDA install visible
+# before importing faster_whisper, and keep the DLL directory handle alive.
+cuda_dll_dir = os.environ.get("RECEIPTS_CUDA_DLL_DIR", "").strip()
+cuda_dll_handle = None
+if cuda_dll_dir:
+    os.environ["PATH"] = cuda_dll_dir + os.pathsep + os.environ.get("PATH", "")
+    if hasattr(os, "add_dll_directory"):
+        try:
+            cuda_dll_handle = os.add_dll_directory(cuda_dll_dir)
+        except OSError as exc:
+            print(json.dumps({"type": "status", "message": f"Could not add RECEIPTS_CUDA_DLL_DIR: {exc}"}), flush=True)
+
 import numpy as np
 from faster_whisper import WhisperModel
 

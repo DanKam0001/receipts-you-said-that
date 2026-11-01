@@ -56,3 +56,20 @@ assert.equal(worker.status.lastRtf, 0.0125);
 worker.stop();
 assert.equal(worker.status.state, "stopped");
 console.log("ok - sidecar pipe failure preserves audio, reports restart state, and retries queued audio");
+
+const launchEnvironments: NodeJS.ProcessEnv[] = [];
+const sidecarCountBeforeCudaTest = sidecars.length;
+const cudaWorker = new WhisperWorker((_command, _args, options) => {
+  launchEnvironments.push(options.env as NodeJS.ProcessEnv);
+  return launchFake();
+});
+cudaWorker.on("error", () => {});
+cudaWorker.start();
+sidecars.at(-1)!.child.emit("close", 127, null); // Simulate a native DLL load failure before READY.
+await waitFor(() => sidecars.length === sidecarCountBeforeCudaTest + 2, "sidecar did not restart after startup exit");
+assert.equal(launchEnvironments[0]!.RECEIPTS_ASR_DEVICE, process.env.RECEIPTS_ASR_DEVICE ?? "cuda");
+assert.equal(launchEnvironments[1]!.RECEIPTS_ASR_DEVICE, "cpu", "startup crash under CUDA should retry on CPU");
+sidecars.at(-1)!.stdout.write('{"type":"ready","device":"cpu/int8","embedding_model":"test"}\n');
+await waitFor(() => cudaWorker.status.state === "ready", "CPU fallback sidecar did not become ready");
+cudaWorker.stop();
+console.log("ok - startup crash while CUDA is requested relaunches sidecar with CPU");

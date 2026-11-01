@@ -6,7 +6,7 @@ When a viewer types `!receipts <plain-language claim>`, Receipts searches the cu
 
 - Windows 11, Node.js 20+, Python 3.10+, and FFmpeg on `PATH`.
 - For local transcription and sentence matching: install `asr/requirements.txt` into `.venv`. Whisper and FastEmbed model files cache under `D:/hf_cache`.
-- GPU mode uses faster-whisper CUDA FP16 and runs a real silence decode probe before reporting ready; any probe failure falls back to CPU int8. Set `RECEIPTS_ASR_DEVICE=cpu` to force CPU or `cuda` to try CUDA first. The control page and overlay expose sidecar health, queued audio, lag, and transcription real-time factor. The worker restarts with capped backoff and preserves queued chunks.
+- GPU mode uses faster-whisper CUDA FP16 and runs a real silence decode probe before reporting ready; any probe failure falls back to CPU int8. Set `RECEIPTS_ASR_DEVICE=cpu` to force CPU or `cuda` to try CUDA first. Optionally set `RECEIPTS_CUDA_DLL_DIR` to the folder containing CUDA DLLs (for example `D:/cuda12/nvidia/cublas/bin`); it is added to the DLL search path before faster-whisper loads. If a native CUDA DLL failure kills the sidecar before startup completes, Node retries with CPU int8. The control page and overlay expose sidecar health, queued audio, lag, and transcription real-time factor. The worker restarts with capped backoff and preserves queued chunks.
 - A real speech recording (WAV or MP3) for replay demos. The app does not ship a canned transcript or synthesized speech.
 - Current API references: [Twitch EventSub WebSocket](https://dev.twitch.tv/docs/eventsub/handling-websocket-events/), [Twitch Send Chat Message](https://dev.twitch.tv/docs/api/reference), and [faster-whisper README](https://github.com/SYSTRAN/faster-whisper/blob/master/README.md).
 

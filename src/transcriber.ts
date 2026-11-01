@@ -28,6 +28,8 @@ export class WhisperWorker extends EventEmitter {
   private ready = false;
   private running = false;
   private restartAttempts = 0;
+  private currentSidecarReady = false;
+  private cpuStartupFallback = false;
   private restartTimer?: ReturnType<typeof setTimeout>;
   private queue: AudioChunk[] = [];
   private inFlight?: AudioChunk;
@@ -65,7 +67,7 @@ export class WhisperWorker extends EventEmitter {
       child = this.launch(python, ["asr/worker.py"], { windowsHide: true, env: { ...process.env,
         HF_HOME: process.env.HF_HOME ?? "D:/hf_cache",
         FASTEMBED_CACHE_PATH: process.env.FASTEMBED_CACHE_PATH ?? "D:/hf_cache/fastembed",
-        RECEIPTS_ASR_DEVICE: process.env.RECEIPTS_ASR_DEVICE ?? "cuda" } });
+        RECEIPTS_ASR_DEVICE: this.cpuStartupFallback ? "cpu" : (process.env.RECEIPTS_ASR_DEVICE ?? "cuda") } });
     } catch (error) {
       this.sidecarFailed(undefined, error as Error);
       return;
@@ -84,6 +86,8 @@ export class WhisperWorker extends EventEmitter {
 
   private sidecarFailed(child: ChildProcessWithoutNullStreams | undefined, error: Error) {
     if (child && this.child !== child) return;
+    const failedDuringStartup = !!child && !this.currentSidecarReady;
+    this.currentSidecarReady = false;
     if (child) {
       this.child = undefined;
       if (child.exitCode === null || child.exitCode === undefined) { try { child.kill(); } catch { /* Exit and retry even if already gone. */ } }
@@ -92,6 +96,10 @@ export class WhisperWorker extends EventEmitter {
     if (this.inFlight) { this.queue.unshift(this.inFlight); this.inFlight = undefined; }
     for (const entry of this.pending.values()) entry.reject(new Error("Speech sidecar restarted during embedding"));
     this.pending.clear();
+    if (failedDuringStartup && (process.env.RECEIPTS_ASR_DEVICE ?? "cuda") === "cuda" && !this.cpuStartupFallback) {
+      this.cpuStartupFallback = true;
+      error = new Error(`${error.message}; CUDA sidecar exited during startup, retrying with CPU int8`);
+    }
     this.reportError(error);
     if (!this.running) { this.setStatus("stopped", error.message); return; }
     const delay = Math.min(500 * (2 ** this.restartAttempts), MAX_RESTART_MS);
@@ -109,6 +117,7 @@ export class WhisperWorker extends EventEmitter {
     catch { this.emit("log", `Ignored malformed ASR sidecar output (${line.length} characters)`); return; }
     if (message.type === "ready") {
       this.ready = true;
+      this.currentSidecarReady = true;
       this.setStatus("ready", `Local faster-whisper ready (${message.device})`, String(message.device));
       this.emit("ready", `${message.device}; ${message.embedding_model}`);
       this.flushQueue();
