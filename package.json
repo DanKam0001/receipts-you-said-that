@@ -8,8 +8,10 @@
     "dev": "npm run build && node dist/src/server.js",
     "start": "npm run build && node dist/src/server.js",
     "auth": "npm run build && node dist/src/auth.js",
+    "twitch:check": "npm run build && node dist/src/twitch-check.js",
     "demo": "npm run build && node dist/src/server.js --demo",
-    "test": "npm run build && node dist/test/run.js",
+    "eval": "npm run build && node dist/eval/run.js",
+    "test": "npm run build && node dist/test/run.js && node dist/test/audio-replay.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

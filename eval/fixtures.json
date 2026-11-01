@@ -1,0 +1,13 @@
+{
+  "audio": "data/replay.wav",
+  "source_audio": "data/alice_chapter1_librivox.mp3",
+  "reference_text": "data/alice_reference.txt",
+  "duration_seconds": 640.6,
+  "sample_rate": 16000,
+  "channels": 1,
+  "noise": { "kind": "white-noise room/game bed plus sparse sine chirps", "rms": 0.018, "seed": 20261101 },
+  "asr_model": "small.en",
+  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+  "claims": "eval/claims.json",
+  "split": { "tune": 15, "held_out": 15 }
+}

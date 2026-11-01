@@ -9,11 +9,12 @@
 - All displayed quotes must be sourced verbatim from this session's transcript, and played audio must come from the local rolling audio buffer. Never synthesize or paraphrase a quote.
 - The streamer opts in. A moderator or broadcaster may veto each receipt through the local page or `!veto`, with a short configurable hold before playback.
 - Audio input has interchangeable live capture-device and real-time file-replay implementations. Both feed the same rolling buffer/transcription path; replay must make an unattended demo possible.
-- Speech recognition uses local faster-whisper. Support the GTX 1660 with 6GB VRAM and CPU fallback; no paid API is needed.
-- Twitch uses OAuth user token, EventSub WebSocket `channel.chat.message`, and Send Chat Message API. Request `user:read:chat`, `user:write:chat`, and `user:bot`. Do not use Affiliate-only APIs.
-- Credentials are in `.env`: `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `TWITCH_CHANNEL`. Never print, log, commit, or expose values. Commit `.env.example`. OAuth redirect is `http://localhost:3000`. `npm run auth` prints a human-approval URL, stores tokens only in a gitignored file, and handles refresh.
+- Speech recognition uses local faster-whisper. Support the GTX 1660 with 6GB VRAM and CPU fallback; no paid API is needed. Matching combines fuzzy lexical similarity with local CPU sentence embeddings (FastEmbed / all-MiniLM-L6-v2 cached under `D:/hf_cache`) and explicitly guards negation conflicts. Every outcome includes its score.
+- Twitch uses an OAuth user token, EventSub WebSocket `channel.chat.message`, and Send Chat Message API. Request `user:read:chat`, `user:write:chat`, `user:bot`, and `channel:read:stream_key`. Do not use Affiliate-only APIs.
+- Credentials are in `.env`: `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `TWITCH_CHANNEL`. Never print, log, commit, or expose values. Commit `.env.example`. `npm run auth` uses Twitch Device Code Grant for phone approval, writes the verification URL and code to ignored `data/auth_prompt.txt`, stores tokens only in ignored `.tokens/`, and refreshes them automatically. `npm run twitch:check` validates identity/scopes and attempts the EventSub subscription; it sends one chat message only with explicit `--send "text"`.
 - OBS browser source is 1920x1080 with transparent background. Design for a readable, oversized game-show stamp on phone-sized streams; support visible audio and sound-off reading. Show chat lives.
 - `npm run demo` runs without Twitch credentials using simulated chat and file replay. It must label simulated chat as `SIMULATED CHAT`; real Twitch chat must never show that label.
+- `npm run eval` downloads public-domain speech and reference text into ignored `data/`, adds deterministic low-level game-like noise/SFX, and reports WER, outcomes, false RECEIPT FOUND count, decision latency, and train/held-out threshold results. Never tune against the held-out half.
 - Keep `.env`, tokens, audio data, and `CODEX_LOG` out of git. Commit implementation in small steps with plain messages.
 - Make reasonable decisions without blocking on questions and record them in `DECISIONS.md`.
 

@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { WebSocketServer } from "ws";
 import { FfmpegPcmSource, RollingAudioBuffer } from "./audio.js";
 import { decide } from "./matcher.js";
@@ -19,13 +20,14 @@ let receipt: Receipt | undefined, audioSource: FfmpegPcmSource | undefined, chat
 const buffer = new RollingAudioBuffer(180), transcript: Utterance[] = [], clips = new Map<string, Buffer>();
 const clients = new Set<import("ws").WebSocket>();
 
-function snapshot() { return { lives, optedIn, receipt, transcript: transcript.length, audio: audioSource ? "running" : "stopped", source: chat ? (chat.simulated ? "simulated" : "twitch") : "none", simulated: Boolean(chat?.simulated) }; }
+function snapshot() { return { lives, optedIn, receipt, transcript: transcript.length, embeddingMs: lastEmbeddingLatency, bufferedSeconds: buffer.bufferedSeconds, audio: audioSource ? "running" : "stopped", source: chat ? (chat.simulated ? "simulated" : "twitch") : "none", simulated: Boolean(chat?.simulated) }; }
 function broadcast() { const value = JSON.stringify(snapshot()); for (const c of clients) if (c.readyState === 1) c.send(value); }
 wss.on("connection", c => { clients.add(c); c.send(JSON.stringify(snapshot())); c.on("close", () => clients.delete(c)); });
 
 const worker = new WhisperWorker();
 worker.on("ready", device => console.log(`Local faster-whisper ready (${device})`));
 worker.on("log", line => console.log(`[ASR] ${line}`));
+worker.on("embeddingLatency", ms => { lastEmbeddingLatency = ms; broadcast(); });
 worker.on("error", err => console.error(`[ASR] ${err.message}`));
 worker.on("transcript", (segments: Utterance[]) => {
   for (const s of segments) if (s.text && !transcript.some(t => Math.abs(t.start - s.start) < 0.5 && t.text === s.text)) transcript.push(s);
@@ -37,13 +39,16 @@ function sendReply(text: string) { void chat?.send(text).catch(e => console.erro
 async function startAudio(mode: "file" | "device", value: string) {
   await audioSource?.stop();
   const source = new FfmpegPcmSource(value, mode); audioSource = source;
-  worker.start();
   source.on("chunk", (chunk: { start: number; end: number; pcm: Buffer }) => { buffer.push(chunk); worker.submit(chunk); broadcast(); });
   source.on("error", (err: Error) => console.error(`[audio] ${err.message}`));
   source.on("end", code => { console.log(`Audio source ended (${code})`); broadcast(); });
-  await source.start(); broadcast();
+  try { await source.start(); }
+  catch (error) { if (audioSource === source) audioSource = undefined; throw error; }
+  try { worker.start(); } catch (e) { console.error(`[ASR] unable to start local speech worker (${(e as Error).message})`); }
+  broadcast();
 }
 
+let lastEmbeddingLatency = 0;
 function canVeto(message: ChatMessage) { return message.isMod || message.isBroadcaster; }
 function processChat(message: ChatMessage) {
   const text = message.text.trim();
@@ -59,8 +64,21 @@ function processChat(message: ChatMessage) {
   if (!optedIn) { sendReply("Receipts are opted out by the broadcaster."); return; }
   clearTimeout(pendingTimer);
   if (receipt) clips.delete(receipt.id);
-  if (!transcript.length) { receipt = { id: randomUUID(), outcome: "CAN'T TELL", query: match[1], requester: message.username, status: "pending", reason: "No transcript is available yet" }; broadcast(); return; }
-  receipt = decide(match[1], transcript, message.username);
+  const query = match[1], start = performance.now();
+  void decideClaim(query, message.username, start);
+}
+
+async function decideClaim(query: string, username: string, startedAt: number) {
+  let queryEmbedding: number[];
+  try { queryEmbedding = await worker.embed(query); }
+  catch (error) {
+    receipt = { id: randomUUID(), outcome: "CAN'T TELL", query, requester: username, status: "pending", score: 0,
+      reason: `Local sentence model unavailable: ${(error as Error).message}` };
+    sendReply("CAN'T TELL. Local sentence model is not ready; no life lost."); broadcast(); return;
+  }
+  receipt = decide(query, transcript, username, randomUUID(), queryEmbedding);
+  receipt.decisionMs = Number((performance.now() - startedAt).toFixed(1));
+  console.log(`Receipt decision completed (${receipt.outcome}, score=${receipt.score.toFixed(3)}, decision_ms=${receipt.decisionMs})`);
   if (receipt.outcome === "NO MATCH") { lives = Math.max(0, lives - 1); sendReply(`NO MATCH. Chat loses a life. ${lives} remain.`); }
   else if (receipt.outcome === "CAN'T TELL") sendReply("CAN'T TELL. No life lost.");
   else {

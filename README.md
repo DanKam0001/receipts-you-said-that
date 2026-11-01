@@ -5,7 +5,7 @@ When a viewer types `!receipts <plain-language claim>`, Receipts searches the cu
 ## Requirements
 
 - Windows 11, Node.js 20+, Python 3.10+, and FFmpeg on `PATH`.
-- For local transcription: `python -m pip install -r asr/requirements.txt`. The first start downloads the selected model to the normal local Hugging Face cache.
+- For local transcription and sentence matching: install `asr/requirements.txt` into `.venv`. Whisper and FastEmbed model files cache under `D:/hf_cache`.
 - GPU mode uses faster-whisper CUDA FP16; CPU fallback uses int8. Current faster-whisper requires CUDA 12 + cuDNN 9 for current CTranslate2 releases. Windows users need NVIDIA runtime libraries on `PATH`; otherwise set `RECEIPTS_GPU=cpu`.
 - A real speech recording (WAV or MP3) for replay demos. The app does not ship a canned transcript or synthesized speech.
 - Current API references: [Twitch EventSub WebSocket](https://dev.twitch.tv/docs/eventsub/handling-websocket-events/), [Twitch Send Chat Message](https://dev.twitch.tv/docs/api/reference), and [faster-whisper README](https://github.com/SYSTRAN/faster-whisper/blob/master/README.md).
@@ -28,7 +28,7 @@ Open `http://localhost:3000/control`, click opt-in, and start the replay if it d
 
 ## Twitch setup
 
-Create a Twitch developer application with redirect URL `http://localhost:3000`, then put these values in `.env` without sharing the file:
+Put the Twitch application values in `.env` without sharing the file. Device Code Grant does not use a localhost callback:
 
 ```dotenv
 TWITCH_CLIENT_ID=your-client-id
@@ -36,7 +36,7 @@ TWITCH_CLIENT_SECRET=your-client-secret
 TWITCH_CHANNEL=your-channel-login
 ```
 
-Run `npm run auth`. Open the printed approval URL and approve `user:read:chat`, `user:write:chat`, and `user:bot`. The callback stores access and refresh tokens in `.tokens/twitch.json`; this path is gitignored. Start the server with `npm run start`. EventSub WebSocket connects and subscribes to `channel.chat.message` after `session_welcome`; chat sends use the Helix Send Chat Message API.
+Run `npm run auth`. Open the printed Twitch verification URL on a phone, enter the displayed code, and approve `user:read:chat`, `user:write:chat`, `user:bot`, and `channel:read:stream_key`. The URL/code are also written to ignored `data/auth_prompt.txt`; rotating access and refresh tokens are stored in `.tokens/twitch.json`. Run `npm run twitch:check` to validate identity/scopes and EventSub subscription. Append `-- --send "text"` only when intentionally sending a test chat message. Start the server with `npm run start`.
 
 ## Controls and current spike limits
 
@@ -44,16 +44,17 @@ Run `npm run auth`. Open the printed approval URL and approve `user:read:chat`, 
 - The hold defaults to five seconds (`RECEIPTS_HOLD_MS`). A moderator/broadcaster `!veto` or the local veto button cancels playback during the hold.
 - `RECEIPTS_LIVES` sets the starting chat lives.
 - Audio remains in a bounded in-memory ring buffer; it is not saved by this app. The transcription window is eight seconds and transcript timestamps are relative to the current replay/capture session.
-- Matcher thresholds are conservative lexical overlap heuristics, not a semantic model. Tune on real stream audio before relying on life loss; no confidence calibration has been done.
+- The matcher combines fuzzy lexical similarity and local sentence embeddings, with explicit polarity checks. It reports a score for every outcome. Thresholds remain uncalibrated until `npm run eval` completes on the local machine.
 - This is an end-to-end spike. It does not yet implement durable transcript export, multiple simultaneous receipts, reconnect backoff policy, or a polished responsive streamer settings experience.
 
 ## Commands
 
 ```powershell
 npm run demo       # local simulator + optional file replay
-npm run auth       # print Twitch OAuth URL and receive approval callback
+npm run auth       # Device Code Grant; approve on any device
 npm run start      # local server, Twitch chat if token exists
 npm test           # matcher and rolling buffer tests
 npm run typecheck  # TypeScript check
+npm run eval       # real-time replay + faster-whisper evaluation and threshold sweep
 npm run build      # compile to dist/
 ```

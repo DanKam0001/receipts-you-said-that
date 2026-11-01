@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { WebSocket } from "ws";
 import type { ChatMessage } from "./model.js";
+import { loadTokens, refreshTokens, validateToken, type StoredTokens } from "./token-store.js";
 
 export interface ChatSource extends EventEmitter { start(): Promise<void>; send(text: string, replyId?: string): Promise<void>; stop(): void; readonly simulated: boolean; }
 export class SimulatedChatSource extends EventEmitter implements ChatSource {
@@ -12,25 +12,21 @@ export class SimulatedChatSource extends EventEmitter implements ChatSource {
   stop() {}
 }
 
-interface TokenFile { access_token: string; refresh_token: string; expires_at: number; }
-const TOKEN_PATH = ".tokens/twitch.json";
-const scopes = ["user:read:chat", "user:write:chat", "user:bot"];
-
 export class TwitchChatSource extends EventEmitter implements ChatSource {
   readonly simulated = false;
   private socket?: WebSocket;
-  private token!: TokenFile;
+  private token!: StoredTokens;
   private broadcasterId!: string;
   private userId!: string;
   private stopped = false;
   private reconnecting = false;
   private seen = new Set<string>();
+  private refreshInFlight?: Promise<void>;
   constructor(private readonly cfg: { clientId: string; clientSecret: string; channel: string }) { super(); }
   async start() {
-    this.token = JSON.parse(await readFile(TOKEN_PATH, "utf8")) as TokenFile;
+    this.token = await loadTokens();
     await this.refreshIfNeeded();
-    const validation = await fetch("https://id.twitch.tv/oauth2/validate", { headers: { Authorization: `OAuth ${this.token.access_token}` } });
-    const identity = await validation.json() as { user_id: string };
+    const identity = await validateToken(this.token.access_token);
     this.userId = identity.user_id;
     const userResp = await this.helix(`/users?login=${encodeURIComponent(this.cfg.channel)}`);
     const users = await userResp.json() as { data: Array<{ id: string }> };
@@ -38,18 +34,19 @@ export class TwitchChatSource extends EventEmitter implements ChatSource {
     this.broadcasterId = users.data[0].id;
     this.connect("wss://eventsub.wss.twitch.tv/ws");
   }
-  private async refreshIfNeeded() {
-    if (this.token.expires_at > Date.now() + 60_000) return;
-    const res = await fetch("https://id.twitch.tv/oauth2/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ client_id: this.cfg.clientId, client_secret: this.cfg.clientSecret, grant_type: "refresh_token", refresh_token: this.token.refresh_token }) });
-    if (!res.ok) throw new Error(`Twitch token refresh failed (${res.status})`);
-    const data = await res.json() as { access_token: string; refresh_token: string; expires_in: number };
-    this.token = { access_token: data.access_token, refresh_token: data.refresh_token, expires_at: Date.now() + data.expires_in * 1000 };
-    await writeFile(TOKEN_PATH, JSON.stringify(this.token), { mode: 0o600 });
+  private async refreshIfNeeded(force = false) {
+    if (!force && this.token.expires_at > Date.now() + 60_000) return;
+    this.refreshInFlight ??= refreshTokens(this.token, this.cfg.clientId, this.cfg.clientSecret).then(updated => { this.token = updated; }).finally(() => { this.refreshInFlight = undefined; });
+    await this.refreshInFlight;
   }
   private async helix(path: string, init: RequestInit = {}) {
     await this.refreshIfNeeded();
-    const res = await fetch(`https://api.twitch.tv/helix${path}`, { ...init, headers: { Authorization: `Bearer ${this.token.access_token}`, "Client-Id": this.cfg.clientId, "Content-Type": "application/json", ...init.headers } });
+    const usedToken = this.token.access_token;
+    let res = await fetch(`https://api.twitch.tv/helix${path}`, { ...init, headers: { Authorization: `Bearer ${usedToken}`, "Client-Id": this.cfg.clientId, "Content-Type": "application/json", ...init.headers } });
+    if (res.status === 401) {
+      if (this.token.access_token === usedToken) await this.refreshIfNeeded(true);
+      res = await fetch(`https://api.twitch.tv/helix${path}`, { ...init, headers: { Authorization: `Bearer ${this.token.access_token}`, "Client-Id": this.cfg.clientId, "Content-Type": "application/json", ...init.headers } });
+    }
     if (!res.ok) throw new Error(`Twitch API request failed (${res.status}): ${path.split("?")[0]}`);
     return res;
   }
@@ -93,12 +90,3 @@ export class TwitchChatSource extends EventEmitter implements ChatSource {
   stop() { this.stopped = true; this.socket?.close(); }
 }
 
-export function oauthUrl(state: string, clientId: string) {
-  const url = new URL("https://id.twitch.tv/oauth2/authorize");
-  url.search = new URLSearchParams({ client_id: clientId, redirect_uri: process.env.RECEIPTS_REDIRECT_URI ?? "http://localhost:3000", response_type: "code", scope: scopes.join(" "), state }).toString();
-  return url.toString();
-}
-export async function saveTokens(data: { access_token: string; refresh_token: string; expires_in: number }) {
-  await mkdir(".tokens", { recursive: true });
-  await writeFile(TOKEN_PATH, JSON.stringify({ access_token: data.access_token, refresh_token: data.refresh_token, expires_at: Date.now() + data.expires_in * 1000 }), { mode: 0o600 });
-}

@@ -1,0 +1,10 @@
+{
+  "run": "demo on port 3103 with data/replay.wav",
+  "observed_states": [
+    {"simulated": true, "audio": "running", "transcript": 0, "bufferedSeconds": 16},
+    {"simulated": true, "audio": "running", "transcript": 0, "bufferedSeconds": 32, "receiptOutcome": "CAN'T TELL", "lives": 3}
+  ],
+  "http": {"overlay": 200, "control": 200},
+  "blocked_at": "Python child spawn returned EPERM",
+  "clip_playback_proven": false
+}
