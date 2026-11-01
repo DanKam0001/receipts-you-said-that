@@ -1,13 +1,13 @@
 import "dotenv/config";
 import express from "express";
 import { createServer } from "node:http";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { WebSocketServer } from "ws";
 import { FfmpegPcmSource, RollingAudioBuffer } from "./audio.js";
-import { decide } from "./matcher.js";
+import { decideVerified, DEFAULT_THRESHOLDS, normalizeClaimForNli, retrieve, type DecisionThresholds } from "./matcher.js";
 import type { ChatMessage, Receipt, Utterance } from "./model.js";
 import { SimulatedChatSource, TwitchChatSource, type ChatSource } from "./twitch.js";
 import { WhisperWorker } from "./transcriber.js";
@@ -15,6 +15,8 @@ import { WhisperWorker } from "./transcriber.js";
 const app = express(); app.use(express.json()); app.use(express.static("public"));
 const http = createServer(app), wss = new WebSocketServer({ server: http });
 const demo = process.argv.includes("--demo");
+let decisionThresholds: DecisionThresholds = DEFAULT_THRESHOLDS;
+try { decisionThresholds = { ...DEFAULT_THRESHOLDS, ...JSON.parse(readFileSync("data/nli-thresholds.json", "utf8")) }; } catch { /* Use defaults until eval writes tune-only thresholds. */ }
 let lives = Number(process.env.RECEIPTS_LIVES ?? 3), optedIn = false;
 let receipt: Receipt | undefined, audioSource: FfmpegPcmSource | undefined, chat: ChatSource;
 const buffer = new RollingAudioBuffer(180), transcript: Utterance[] = [], clips = new Map<string, Buffer>();
@@ -70,16 +72,22 @@ function processChat(message: ChatMessage) {
 }
 
 async function decideClaim(query: string, username: string, startedAt: number) {
-  let queryEmbedding: number[];
-  try { queryEmbedding = await worker.embed(query); }
+  let candidates;
+  let probabilities;
+  try {
+    const proposition = normalizeClaimForNli(query);
+    const queryEmbedding = await worker.embed(proposition);
+    candidates = retrieve(query, transcript, queryEmbedding, 8);
+    probabilities = await worker.verify(candidates.map(candidate => ({ premise: candidate.premise, hypothesis: proposition })));
+  }
   catch (error) {
     receipt = { id: randomUUID(), outcome: "CAN'T TELL", query, requester: username, status: "pending", score: 0,
-      reason: `Local sentence model unavailable: ${(error as Error).message}` };
-    sendReply("CAN'T TELL. Local sentence model is not ready; no life lost."); broadcast(); return;
+      reason: `Local retrieval/verification unavailable: ${(error as Error).message}` };
+    sendReply("CAN'T TELL. Local retrieval or verification model is not ready; no life lost."); broadcast(); return;
   }
-  receipt = decide(query, transcript, username, randomUUID(), queryEmbedding);
+  receipt = decideVerified(query, candidates, probabilities, username, randomUUID(), decisionThresholds);
   receipt.decisionMs = Number((performance.now() - startedAt).toFixed(1));
-  console.log(`Receipt decision completed (${receipt.outcome}, score=${receipt.score.toFixed(3)}, decision_ms=${receipt.decisionMs})`);
+  console.log(`Receipt decision completed (${receipt.outcome}, entailment=${receipt.score.toFixed(3)}, candidate=${receipt.candidateId ?? "none"}, retrieval=${receipt.retrievalScore?.toFixed(3) ?? "none"}, decision_ms=${receipt.decisionMs})`);
   if (receipt.outcome === "NO MATCH") { lives = Math.max(0, lives - 1); sendReply(`NO MATCH. Chat loses a life. ${lives} remain.`); }
   else if (receipt.outcome === "CAN'T TELL") sendReply("CAN'T TELL. No life lost.");
   else {

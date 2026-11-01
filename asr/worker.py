@@ -62,8 +62,50 @@ except ImportError:
     embedder = None
     embedding_status = "unavailable (install asr/requirements.txt)"
 
+verifier = None
+tokenizer = None
+label_indices = None
+nli_status = "unavailable"
+nli_probe_ms = None
+try:
+    import onnxruntime as ort
+    from tokenizers import Tokenizer
+    from huggingface_hub import snapshot_download
+
+    nli_path = snapshot_download(
+        repo_id="Xenova/nli-deberta-v3-small",
+        allow_patterns=["config.json", "tokenizer.json", "tokenizer_config.json", "onnx/model_quantized.onnx"],
+        cache_dir=os.path.join(os.environ["HF_HOME"], "hub"),
+        local_files_only=True,
+    )
+    with open(os.path.join(nli_path, "config.json"), "r", encoding="utf-8") as config_file:
+        config = json.load(config_file)
+    id2label = {int(index): str(label).upper() for index, label in config["id2label"].items()}
+    label_indices = {}
+    for index, label in id2label.items():
+        for wanted in ("CONTRADICTION", "ENTAILMENT", "NEUTRAL"):
+            if wanted in label:
+                label_indices[wanted.lower()] = index
+    if set(label_indices) != {"contradiction", "entailment", "neutral"}:
+        raise ValueError(f"NLI config id2label does not define contradiction/entailment/neutral: {id2label}")
+    tokenizer = Tokenizer.from_file(os.path.join(nli_path, "tokenizer.json"))
+    tokenizer.enable_truncation(max_length=512)
+    verifier = ort.InferenceSession(os.path.join(nli_path, "onnx", "model_quantized.onnx"), providers=["CPUExecutionProvider"])
+    probe = tokenizer.encode("A person is reading indoors.", "Someone is reading inside.", add_special_tokens=True)
+    probe_inputs = {entry.name for entry in verifier.get_inputs()}
+    probe_feeds = {"input_ids": np.asarray([probe.ids], dtype=np.int64),
+                   "attention_mask": np.asarray([probe.attention_mask], dtype=np.int64),
+                   "token_type_ids": np.asarray([probe.type_ids], dtype=np.int64)}
+    probe_started = time.perf_counter()
+    verifier.run(None, {name: probe_feeds[name] for name in probe_inputs if name in probe_feeds})
+    nli_probe_ms = (time.perf_counter() - probe_started) * 1000.0
+    nli_status = f"Xenova/nli-deberta-v3-small (CPU, cached/offline; warm-up {nli_probe_ms:.2f}ms/pair)"
+except Exception as exc:
+    print(json.dumps({"type": "status", "message": f"Local NLI verifier unavailable: {exc}"}), flush=True)
+
 print(json.dumps({"type": "ready", "device": device, "probe_ms": probe_ms,
-                  "embedding_model": embedding_status}), flush=True)
+                  "embedding_model": embedding_status, "nli_model": nli_status,
+                  "nli_probe_ms": nli_probe_ms}), flush=True)
 
 for line in sys.stdin:
     item = {}
@@ -91,6 +133,30 @@ for line in sys.stdin:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             print(json.dumps({"type": "embedding", "request_id": item["request_id"],
                               "vector": vector.tolist(), "elapsed_ms": elapsed_ms}), flush=True)
+        elif item["type"] == "verify":
+            if verifier is None or tokenizer is None or label_indices is None:
+                raise RuntimeError(f"Local NLI verifier unavailable: {nli_status}")
+            started = time.perf_counter()
+            outputs = []
+            input_names = {entry.name for entry in verifier.get_inputs()}
+            for pair in item["pairs"]:
+                encoded = tokenizer.encode(pair["premise"], pair["hypothesis"], add_special_tokens=True)
+                feeds = {
+                    "input_ids": np.asarray([encoded.ids], dtype=np.int64),
+                    "attention_mask": np.asarray([encoded.attention_mask], dtype=np.int64),
+                    "token_type_ids": np.asarray([encoded.type_ids], dtype=np.int64),
+                }
+                logits = verifier.run(None, {name: feeds[name] for name in input_names if name in feeds})[0][0]
+                exp = np.exp(logits - np.max(logits))
+                probs = exp / exp.sum()
+                outputs.append({"contradiction": float(probs[label_indices["contradiction"]]),
+                                "entailment": float(probs[label_indices["entailment"]]),
+                                "neutral": float(probs[label_indices["neutral"]])})
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            print(json.dumps({"type": "verified", "request_id": item["request_id"],
+                              "pairs": outputs, "elapsed_ms": elapsed_ms,
+                              "mean_pair_ms": elapsed_ms / max(1, len(outputs)),
+                              "pair_count": len(outputs)}), flush=True)
     except Exception as exc:
         print(json.dumps({"type": "error", "message": str(exc), "request_id": item.get("request_id"),
                           "chunk_id": item.get("chunk_id"), "start": item.get("start")}), flush=True)

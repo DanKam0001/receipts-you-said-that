@@ -5,5 +5,5 @@ export interface Receipt {
   id: string; outcome: Outcome; query: string; quote?: string; timestamp?: number;
   context?: string; clipStart?: number; clipEnd?: number; requester: string; score: number;
   decisionMs?: number;
-  status: "pending" | "vetoed" | "played"; reason?: string;
+  status: "pending" | "vetoed" | "played"; reason?: string; candidateId?: string; retrievalScore?: number;
 }

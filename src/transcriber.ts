@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { Utterance } from "./model.js";
+import type { NliProbabilities } from "./matcher.js";
 
 export type AsrState = "stopped" | "starting" | "ready" | "degraded" | "restarting";
 export interface AsrStatus {
@@ -18,7 +19,7 @@ export interface AsrStatus {
   lastRtf?: number;
 }
 interface AudioChunk { id: string; start: number; duration: number; pcm: Buffer; }
-interface PendingEmbedding { resolve: (vector: number[]) => void; reject: (error: Error) => void; }
+interface PendingRequest { resolve: (value: any) => void; reject: (error: Error) => void; }
 export type SidecarLauncher = (command: string, args: string[], options: SpawnOptionsWithoutStdio) => ChildProcessWithoutNullStreams;
 
 const MAX_RESTART_MS = 30_000;
@@ -33,7 +34,7 @@ export class WhisperWorker extends EventEmitter {
   private restartTimer?: ReturnType<typeof setTimeout>;
   private queue: AudioChunk[] = [];
   private inFlight?: AudioChunk;
-  private pending = new Map<string, PendingEmbedding>();
+  private pending = new Map<string, PendingRequest>();
   private statusValue: AsrStatus = { state: "stopped", message: "Speech recognition stopped", queuedAudioSeconds: 0, inFlightAudioSeconds: 0, lagSeconds: 0, queuedChunks: 0 };
 
   constructor(private readonly launch: SidecarLauncher = (command, args, options) => spawn(command, args, options)) { super(); }
@@ -118,8 +119,8 @@ export class WhisperWorker extends EventEmitter {
     if (message.type === "ready") {
       this.ready = true;
       this.currentSidecarReady = true;
-      this.setStatus("ready", `Local faster-whisper ready (${message.device})`, String(message.device));
-      this.emit("ready", `${message.device}; ${message.embedding_model}`);
+      this.setStatus("ready", `Local faster-whisper ready (${message.device}); NLI ${message.nli_model ?? "unavailable"}`, String(message.device));
+      this.emit("ready", `${message.device}; embeddings ${message.embedding_model}; NLI ${message.nli_model ?? "unavailable"}`);
       this.flushQueue();
     } else if (message.type === "status") this.emit("log", String(message.message));
     else if (message.type === "transcript") {
@@ -140,6 +141,10 @@ export class WhisperWorker extends EventEmitter {
       const pending = this.pending.get(message.request_id);
       if (pending) { this.pending.delete(message.request_id); pending.resolve(message.vector as number[]); }
       this.emit("embeddingLatency", Number(message.elapsed_ms));
+    } else if (message.type === "verified") {
+      const pending = this.pending.get(message.request_id);
+      if (pending) { this.pending.delete(message.request_id); pending.resolve(message.pairs as NliProbabilities[]); }
+      this.emit("verificationLatency", Number(message.elapsed_ms), Number(message.mean_pair_ms), Number(message.pair_count));
     } else if (message.type === "error") {
       const error = new Error(String(message.message ?? "ASR sidecar request failed"));
       if (message.request_id && this.pending.has(message.request_id)) {
@@ -183,6 +188,18 @@ export class WhisperWorker extends EventEmitter {
       this.pending.set(request_id, { resolve: resolveEmbedding, reject });
       if (!this.write({ type: "embed", request_id, text })) {
         this.pending.delete(request_id); reject(new Error("Unable to send embedding request to local speech sidecar"));
+      }
+    });
+  }
+
+  verify(pairs: { premise: string; hypothesis: string }[]): Promise<NliProbabilities[]> {
+    if (!this.ready || !this.child) return Promise.reject(new Error("Local NLI verifier is not ready"));
+    if (!pairs.length) return Promise.resolve([]);
+    const request_id = randomUUID();
+    return new Promise((resolveVerification, reject) => {
+      this.pending.set(request_id, { resolve: resolveVerification, reject });
+      if (!this.write({ type: "verify", request_id, pairs })) {
+        this.pending.delete(request_id); reject(new Error("Unable to send NLI request to local speech sidecar"));
       }
     });
   }

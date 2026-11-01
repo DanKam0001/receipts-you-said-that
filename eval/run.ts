@@ -4,13 +4,13 @@ import { performance } from "node:perf_hooks";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { FfmpegPcmSource } from "../src/audio.js";
-import { decide, type Thresholds } from "../src/matcher.js";
+import { decideVerified, normalizeClaimForNli, retrieve, type DecisionThresholds } from "../src/matcher.js";
 import type { Utterance } from "../src/model.js";
 import { WhisperWorker } from "../src/transcriber.js";
 import { ReplayCompletion } from "../src/replay-completion.js";
 
-interface Claim { id: string; split: "tune" | "held_out"; expected: "RECEIPT FOUND" | "NO MATCH"; claim: string; }
-interface Trial { outcome: string; score: number; latency: number; }
+interface Claim { id: string; split: "tune" | "seen_held_out" | "fresh_held_out"; expected: "RECEIPT FOUND" | "NO MATCH"; claim: string; }
+interface Trial { outcome: string; score: number; latency: number; candidateId?: string; }
 interface TranscriptCache { version: 2; sourceBytes: number; sourceMtimeMs: number; asrModel: string; device: string; meanRtf: number; maxRtf: number; p95Rtf: number; transcript: Utterance[]; }
 const resultPath = resolve("eval/RESULTS.md"), sourcePath = resolve("data/replay.wav"), referencePath = resolve("data/alice_reference.txt");
 const cachePath = resolve("data/eval-transcript-cache.json"), fastEmbedPath = resolve(".venv/Lib/site-packages/fastembed");
@@ -21,9 +21,9 @@ async function writeBlocked(reason: string) {
   if (!evaluationClaims.length && existsSync("eval/claims.json")) {
     try { evaluationClaims = JSON.parse(await readFile("eval/claims.json", "utf8")) as Claim[]; } catch { /* Preserve the primary evaluation failure. */ }
   }
-  const held = evaluationClaims.filter(claim => claim.split === "held_out");
-  const rows = held.map(claim => `| ${claim.id} | ${claim.claim.replaceAll("|", "\\|")} | ${claim.expected} | N/A | N/A |`).join("\n");
-  const table = held.length ? `\n\n## Held-out claims\n\n| ID | Claim | Expected | Actual | Score |\n|---|---|---|---|---:|\n${rows}` : "";
+  const held = evaluationClaims.filter(claim => claim.split === "fresh_held_out");
+  const rows = held.map(claim => `| ${claim.id} | ${claim.claim.replaceAll("|", "\\|")} | ${claim.expected} | N/A | N/A | N/A |`).join("\n");
+  const table = held.length ? `\n\n## Fresh held-out claims\n\n| ID | Claim | Expected | Actual | Entailment score | Candidate |\n|---|---|---|---|---:|---|\n${rows}` : "";
   await writeFile(resultPath, `# Evaluation results\n\nRun date: ${new Date().toISOString()}\n\n## Status: BLOCKED\n\n${reason}\n\nNo evaluation metrics are reported for this blocked run. Transcript cache: ${existsSync(cachePath) ? "present but not verified/used" : "not present"}. The replay fixture ${existsSync(sourcePath) ? "is present" : "is missing"}.${table}\n`, "utf8");
 }
 
@@ -43,8 +43,10 @@ async function main() {
   evaluationClaims = JSON.parse(await readFile("eval/claims.json", "utf8")) as Claim[];
   if (!existsSync(sourcePath) || !existsSync(referencePath)) throw new Error("Replay/reference fixtures are missing; run .venv\\Scripts\\python.exe eval\\prepare.py first");
   if (!existsSync(fastEmbedPath)) throw new Error("FastEmbed is missing from the existing .venv; install the packages already listed in asr/requirements.txt");
-  const tune = evaluationClaims.filter(claim => claim.split === "tune"), held = evaluationClaims.filter(claim => claim.split === "held_out");
-  if (evaluationClaims.length !== 30 || tune.length !== 15 || held.length !== 15) throw new Error("Expected 30 claims split evenly into tune and held_out");
+  const tune = evaluationClaims.filter(claim => claim.split === "tune"), seen = evaluationClaims.filter(claim => claim.split === "seen_held_out"), fresh = evaluationClaims.filter(claim => claim.split === "fresh_held_out");
+  if (evaluationClaims.length !== 50 || tune.length !== 15 || seen.length !== 15 || fresh.length !== 20
+      || fresh.filter(claim => claim.expected === "RECEIPT FOUND").length !== 10 || fresh.filter(claim => claim.expected === "NO MATCH").length !== 10)
+    throw new Error("Expected 15 tune, 15 seen_held_out, and 20 fresh_held_out claims (10 true and 10 false)");
 
   const sourceStats = await stat(sourcePath), asrModel = process.env.RECEIPTS_ASR_MODEL ?? "small.en";
   const fast = process.argv.includes("--fast");
@@ -111,28 +113,36 @@ async function main() {
       asrModel, device, meanRtf, maxRtf, p95Rtf, transcript } satisfies TranscriptCache));
   }
 
-  const vectors = new Map<string, { vector: number[]; latency: number }>();
+  const prepared = new Map<string, { candidates: ReturnType<typeof retrieve>; probabilities: Awaited<ReturnType<typeof worker.verify>>; latency: number }>();
+  let verificationPairTimeMs = 0, verificationPairCount = 0;
+  worker.on("verificationLatency", (_totalMs: number, meanPairMs: number, pairCount: number) => {
+    if (Number.isFinite(meanPairMs) && Number.isFinite(pairCount)) { verificationPairTimeMs += meanPairMs * pairCount; verificationPairCount += pairCount; }
+  });
   for (const claim of evaluationClaims) {
     const started = performance.now();
-    vectors.set(claim.id, { vector: await worker.embed(claim.claim), latency: performance.now() - started });
+    const proposition = normalizeClaimForNli(claim.claim);
+    const vector = await worker.embed(proposition);
+    const candidates = retrieve(claim.claim, transcript, vector, 8);
+    const probabilities = await worker.verify(candidates.map(candidate => ({ premise: candidate.premise, hypothesis: proposition })));
+    prepared.set(claim.id, { candidates, probabilities, latency: performance.now() - started });
   }
-  const runTrial = (claim: Claim, thresholds: Thresholds): Trial => {
-    const cached = vectors.get(claim.id)!; const started = performance.now();
-    const result = decide(claim.claim, transcript, "eval", randomUUID(), cached.vector, thresholds);
-    return { outcome: result.outcome, score: result.score, latency: cached.latency + performance.now() - started };
+  const runTrial = (claim: Claim, thresholds: DecisionThresholds): Trial => {
+    const cached = prepared.get(claim.id)!; const started = performance.now();
+    const result = decideVerified(claim.claim, cached.candidates, cached.probabilities, "eval", randomUUID(), thresholds);
+    return { outcome: result.outcome, score: result.score, latency: cached.latency + performance.now() - started, candidateId: result.candidateId };
   };
-  const grid: Thresholds[] = [];
-  for (let found = 0.45; found <= 0.8501; found += 0.05)
-    for (let miss = 0.10; miss <= Math.min(0.40, found - 0.1); miss += 0.05) grid.push({ found: Number(found.toFixed(2)), miss: Number(miss.toFixed(2)) });
-  let chosen: Thresholds = { found: 0.62, miss: 0.28 }, bestCorrect = -1;
+  const grid: DecisionThresholds[] = [];
+  for (let entailment = 0.55; entailment <= 0.9501; entailment += 0.05)
+    for (let contradiction = 0.35; contradiction <= 0.8001; contradiction += 0.05)
+      grid.push({ entailment: Number(entailment.toFixed(2)), contradiction: Number(contradiction.toFixed(2)) });
+  let chosen: DecisionThresholds = { entailment: 0.78, contradiction: 0.72 }, bestCorrect = -1;
   for (const thresholds of grid) {
     const trials = tune.map(claim => runTrial(claim, thresholds));
     const falseFound = trials.filter((trial, index) => tune[index]!.expected === "NO MATCH" && trial.outcome === "RECEIPT FOUND").length;
     const correct = trials.filter((trial, index) => trial.outcome === tune[index]!.expected).length;
     if (falseFound === 0 && correct > bestCorrect) { chosen = thresholds; bestCorrect = correct; }
   }
-  const tuneTrials = tune.map(claim => runTrial(claim, chosen)), heldTrials = held.map(claim => runTrial(claim, chosen));
-  const allTrials = [...tuneTrials, ...heldTrials];
+  const tuneTrials = tune.map(claim => runTrial(claim, chosen)), seenTrials = seen.map(claim => runTrial(claim, chosen)), freshTrials = fresh.map(claim => runTrial(claim, chosen));
 
   const referenceText = await readFile(referencePath, "utf8");
   const chapterStarts = [...referenceText.matchAll(/\n\s*CHAPTER I\.\s*/gi)];
@@ -149,16 +159,19 @@ async function main() {
   }
   const wer = referenceTokens.length ? previous[transcriptTokens.length]! / referenceTokens.length : NaN;
   const counts = (trials: Trial[]) => Object.fromEntries(["RECEIPT FOUND", "NO MATCH", "CAN'T TELL"].map(outcome => [outcome, trials.filter(trial => trial.outcome === outcome).length]));
-  const heldCounts = counts(heldTrials), overallCounts = counts(allTrials);
-  const heldWrongFound = heldTrials.filter((trial, index) => held[index]!.expected === "NO MATCH" && trial.outcome === "RECEIPT FOUND").length;
-  const overallCorrect = allTrials.filter((trial, index) => trial.outcome === evaluationClaims[index]!.expected).length;
-  const latencies = allTrials.map(trial => trial.latency).sort((a, b) => a - b);
-  const meanLatency = allTrials.reduce((sum, trial) => sum + trial.latency, 0) / allTrials.length;
-  const p95 = latencies[Math.min(latencies.length - 1, Math.ceil(latencies.length * 0.95) - 1)] ?? 0;
-  const heldRows = held.map((claim, index) => `| ${claim.id} | ${claim.claim.replaceAll("|", "\\|")} | ${claim.expected} | ${heldTrials[index]!.outcome} | ${heldTrials[index]!.score.toFixed(4)} |`).join("\n");
-  const targetMet = heldWrongFound === 0 && overallCorrect >= 21;
+  const freshCounts = counts(freshTrials), seenCounts = counts(seenTrials);
+  const freshWrongFound = freshTrials.filter((trial, index) => fresh[index]!.expected === "NO MATCH" && trial.outcome === "RECEIPT FOUND").length;
+  const freshCorrect = freshTrials.filter((trial, index) => trial.outcome === fresh[index]!.expected).length;
+  const freshLatencies = freshTrials.map(trial => trial.latency).sort((a, b) => a - b);
+  const meanLatency = freshTrials.reduce((sum, trial) => sum + trial.latency, 0) / freshTrials.length;
+  const latencyP95 = freshLatencies[Math.min(freshLatencies.length - 1, Math.ceil(freshLatencies.length * 0.95) - 1)] ?? 0;
+  const freshRows = fresh.map((claim, index) => `| ${claim.id} | ${claim.claim.replaceAll("|", "\\|")} | ${claim.expected} | ${freshTrials[index]!.outcome} | ${freshTrials[index]!.score.toFixed(4)} | ${freshTrials[index]!.candidateId ?? "none"} |`).join("\n");
+  const seenRows = seen.map((claim, index) => `| ${claim.id} | ${claim.expected} | ${seenTrials[index]!.outcome} | ${seenTrials[index]!.score.toFixed(4)} |`).join("\n");
+  const targetMet = freshWrongFound === 0 && freshCorrect >= 14;
+  const meanPairLatency = verificationPairCount ? verificationPairTimeMs / verificationPairCount : 0;
+  if (bestCorrect >= 0) await writeFile("data/nli-thresholds.json", JSON.stringify({ ...chosen, selectedOn: "tune" }, null, 2), "utf8");
   const replayMode = cacheUsed ? "skipped; validated cached transcript reused" : fast ? "accelerated eval-only (--fast); same PCM chunks and transcript path" : "real time (default)";
-  const report = `# Evaluation results\n\nRun date: ${new Date().toISOString()}\n\n## Status: COMPLETE\n\n- Replay mode: ${replayMode}.\n- Transcript cache used: ${cacheUsed ? "yes" : "no; this run wrote data/eval-transcript-cache.json"}.\n- ASR: ${device}; model ${asrModel}; transcript utterances ${transcript.length}; chunk RTF mean ${meanRtf.toFixed(3)}, p95 ${p95Rtf.toFixed(3)}, max ${maxRtf.toFixed(3)} (below 1.0 keeps pace).\n- Thresholds chosen on tune half only: found ${chosen.found.toFixed(2)}, miss ${chosen.miss.toFixed(2)}; tune correct ${bestCorrect}/15 with zero tune false FOUND.\n\n## Held-out results (n=15)\n\n- Outcome counts: RECEIPT FOUND ${heldCounts["RECEIPT FOUND"]}, NO MATCH ${heldCounts["NO MATCH"]}, CAN'T TELL ${heldCounts["CAN'T TELL"]}.\n- All-30 outcome counts: RECEIPT FOUND ${overallCounts["RECEIPT FOUND"]}, NO MATCH ${overallCounts["NO MATCH"]}, CAN'T TELL ${overallCounts["CAN'T TELL"]}.\n- Correct overall: ${overallCorrect}/30; wrong held-out RECEIPT FOUND: ${heldWrongFound}.\n- WER: ${(wer * 100).toFixed(2)}% (${previous[transcriptTokens.length]} edits / ${referenceTokens.length} reference words).\n- Claim-to-decision latency: mean ${meanLatency.toFixed(1)} ms; p95 ${p95.toFixed(1)} ms.\n- Target (zero wrong held-out FOUND and at least 21/30 correct): ${targetMet ? "MET" : "NOT MET"}.\n\n## Held-out claims\n\n| ID | Claim | Expected | Actual | Score |\n|---|---|---|---|---:|\n${heldRows}\n`;
+  const report = `# Evaluation results\n\nRun date: ${new Date().toISOString()}\n\n## Status: COMPLETE\n\nFresh held-out claims were written before this revised verifier was run. The prior held-out set has been seen and is reported only as a secondary historical set; thresholds are tuned only on the tune set.\n\n- Replay mode: ${replayMode}.\n- Transcript cache used: ${cacheUsed ? "yes" : "no; this run wrote data/eval-transcript-cache.json"}.\n- ASR: ${device}; model ${asrModel}; transcript utterances ${transcript.length}; chunk RTF mean ${meanRtf.toFixed(3)}, p95 ${p95Rtf.toFixed(3)}, max ${maxRtf.toFixed(3)} (below 1.0 keeps pace).\n- Local verifier: Xenova/nli-deberta-v3-small, CPU; each query retrieved up to 8 hybrid-ranked transcript windows of 1-3 adjacent utterances, then verified premise/hypothesis pairs. Mean pair inference ${meanPairLatency.toFixed(2)} ms (target smoke range 10-15 ms).\n- Thresholds selected on tune only: entailment ${chosen.entailment.toFixed(2)}, contradiction ${chosen.contradiction.toFixed(2)}; tune correct ${bestCorrect}/15 with zero false RECEIPT FOUND. ${bestCorrect >= 0 ? "Tune-only thresholds were saved to ignored data/nli-thresholds.json for the server." : "No threshold pair satisfied the zero-false-FOUND constraint; no threshold file was written."}\n\n## Fresh held-out results (headline, n=20)\n\n- Outcome counts: RECEIPT FOUND ${freshCounts["RECEIPT FOUND"]}, NO MATCH ${freshCounts["NO MATCH"]}, CAN'T TELL ${freshCounts["CAN'T TELL"]}.\n- Correct outcome: ${freshCorrect}/20 (${(freshCorrect / 20 * 100).toFixed(1)}%); wrong false RECEIPT FOUND: ${freshWrongFound}.\n- WER: ${(wer * 100).toFixed(2)}% (${previous[transcriptTokens.length]} edits / ${referenceTokens.length} reference words).\n- Claim-to-decision latency: mean ${meanLatency.toFixed(1)} ms; p95 ${latencyP95.toFixed(1)} ms.\n- Target (zero wrong false FOUND and at least 14/20 correct): ${targetMet ? "MET" : "NOT MET"}.\n\n## Fresh held-out claims\n\n| ID | Claim | Expected | Actual | Entailment score | Candidate |\n|---|---|---|---|---:|---|\n${freshRows}\n\n## Previously seen claims (secondary; not blind)\n\nOutcome counts: RECEIPT FOUND ${seenCounts["RECEIPT FOUND"]}, NO MATCH ${seenCounts["NO MATCH"]}, CAN'T TELL ${seenCounts["CAN'T TELL"]}.\n\n| ID | Expected | Actual | Entailment score |\n|---|---|---|---:|\n${seenRows}\n`;
   await writeFile(resultPath, report, "utf8");
   worker.stop(); activeWorker = undefined;
   console.log(report);

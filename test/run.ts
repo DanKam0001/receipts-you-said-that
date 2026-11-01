@@ -1,51 +1,54 @@
 import assert from "node:assert/strict";
 import { RollingAudioBuffer } from "../src/audio.js";
-import { decide } from "../src/matcher.js";
+import { decideVerified, normalizeClaimForNli, retrieve, type Candidate, type NliProbabilities } from "../src/matcher.js";
 import type { Utterance } from "../src/model.js";
 
 let count = 0;
 function test(name: string, body: () => void) { body(); count++; console.log(`ok ${count} - ${name}`); }
-const transcript: Utterance[] = [
-  { start: 10, end: 12, text: "The hallway is quiet.", embedding: [0, 1] },
-  { start: 12, end: 15, text: "I said that I would eat the whole cake.", embedding: [1, 0] },
-  { start: 15, end: 17, text: "Now let us start the game.", embedding: [0, 1] },
-  { start: 17, end: 20, text: "Everyone in the room was ready to begin the evening game show.", embedding: [0, 1] }
-];
+const p = (entailment: number, contradiction: number, neutral = 1 - entailment - contradiction): NliProbabilities => ({ entailment, contradiction, neutral });
+const base: Candidate = { id: "u2-2", startIndex: 1, utteranceCount: 1, premise: "I wondered how many miles I had fallen.", retrievalScore: 0.82,
+  quote: "I wondered how many miles I've fallen.", timestamp: 12, context: "It was a curious fall. … The ground seemed far away.", clipStart: 10, clipEnd: 17, negationConflict: false };
 
-test("confident match quotes exact transcript and surrounding sentences", () => {
-  const result = decide("you said you would eat the whole cake", transcript, "viewer", "receipt-1", [1, 0]);
+test("viewer attribution is stripped before verification for first-person transcript wording", () => {
+  assert.equal(normalizeClaimForNli("you said that Alice wondered how far she'd fallen"), "Alice wondered how far she'd fallen");
+  assert.equal(normalizeClaimForNli("the streamer claimed she was late"), "she was late");
+});
+
+test("retrieval includes adjacent windows of one, two, and three utterances, capped at eight", () => {
+  const transcript: Utterance[] = Array.from({ length: 5 }, (_, index) => ({ start: index * 2, end: index * 2 + 2, text: `Sentence ${index} about falling and Alice.`, embedding: [1, 0] }));
+  const top = retrieve("you said Alice was falling", transcript, [1, 0]);
+  assert.equal(top.length, 8);
+  assert.ok(top.some(candidate => candidate.utteranceCount === 1));
+  assert.ok(top.some(candidate => candidate.utteranceCount === 2));
+  assert.ok(top.some(candidate => candidate.utteranceCount === 3));
+});
+
+test("high entailment and low contradiction on one candidate produces a verbatim receipt", () => {
+  const result = decideVerified("you said Alice wondered how far she'd fallen", [base], [p(0.93, 0.02)], "viewer", "receipt-1");
   assert.equal(result.outcome, "RECEIPT FOUND");
-  assert.equal(result.quote, "I said that I would eat the whole cake.");
-  assert.equal(result.context, "The hallway is quiet. … Now let us start the game.");
+  assert.equal(result.quote, base.quote);
+  assert.equal(result.score, 0.93);
+  assert.equal(result.candidateId, base.id);
   assert.equal(result.timestamp, 12); assert.equal(result.clipStart, 10); assert.equal(result.clipEnd, 17);
 });
 
-test("confident miss has no transcript word overlap", () => {
-  const reliable = [
-    { start: 0, end: 3, text: "The tournament started early with everyone waiting quietly beside the brightly decorated entrance hall.", embedding: [0, 1] },
-    { start: 3, end: 6, text: "We chose a different map and invited the whole team.", embedding: [0, 1] },
-    { start: 6, end: 9, text: "The final round was close but nobody scored a point.", embedding: [0, 1] },
-    { start: 9, end: 12, text: "After that we went straight back to the lobby and discussed our weekend plans before leaving together.", embedding: [0, 1] }
-  ];
-  const outcome = decide("you said the extraterrestrial cosmonaut fabricated a lavender sandwich yesterday", reliable, "viewer", undefined, [1, 0]).outcome;
-  assert.equal(outcome, "NO MATCH");
-  assert.equal(decide("you said the extraterrestrial cosmonaut fabricated a lavender sandwich yesterday", [{ start: 0, end: 1, text: "A short sentence.", embedding: [0, 1] }], "viewer", undefined, [1, 0]).outcome, "CAN'T TELL");
+test("a clearly contradicting retrieved window yields NO MATCH with its entailment score", () => {
+  const result = decideVerified("you said Alice ate the marmalade", [base], [p(0.03, 0.91)], "viewer", "receipt-2");
+  assert.equal(result.outcome, "NO MATCH");
+  assert.equal(result.score, 0.03);
+  assert.equal(result.candidateId, base.id);
 });
 
-test("ambiguous and unusably short claims return CAN'T TELL", () => {
-  const duplicate = [...transcript, { start: 20, end: 22, text: "I said that I would eat the whole cake.", embedding: [1, 0] }];
-  assert.equal(decide("you said you would eat the whole cake", duplicate, "viewer", undefined, [1, 0]).outcome, "CAN'T TELL");
-  assert.equal(decide("!", transcript, "viewer", undefined, [1, 0]).outcome, "CAN'T TELL");
+test("middle confidence returns CAN'T TELL and explicit polarity conflict vetoes FOUND", () => {
+  assert.equal(decideVerified("you said Alice was late", [base], [p(0.55, 0.12)], "viewer").outcome, "CAN'T TELL");
+  const conflict = { ...base, premise: "I'll always play this.", negationConflict: true };
+  assert.equal(decideVerified("you said you'd never play this", [conflict], [p(0.96, 0.01)], "viewer").outcome, "CAN'T TELL");
 });
 
-test("negation and always/never contradiction prevents a semantic hit", () => {
-  const contradiction: Utterance[] = [
-    { start: 0, end: 1, text: "We loaded the game after checking all of the equipment and microphones carefully before the first round started.", embedding: [0, 1] },
-    { start: 1, end: 2, text: "I'll always play this.", embedding: [1, 0] },
-    { start: 2, end: 3, text: "The next round is beginning now while all the players watch.", embedding: [0, 1] },
-    { start: 3, end: 4, text: "Everyone is ready to play another long round together after testing the headsets and controls.", embedding: [0, 1] }
-  ];
-  assert.notEqual(decide("you said you'd never play this", contradiction, "viewer", undefined, [1, 0]).outcome, "RECEIPT FOUND");
+test("missing or weakly retrieved candidate is a confident NO MATCH; empty claim is uncertain", () => {
+  assert.equal(decideVerified("you said there was a secret", [], [], "viewer").outcome, "NO MATCH");
+  assert.equal(decideVerified("!!!", [base], [p(0.9, 0.02)], "viewer").outcome, "CAN'T TELL");
+  assert.equal(decideVerified("you said secret", [{ ...base, retrievalScore: 0.05 }], [p(0.8, 0.02)], "viewer").outcome, "NO MATCH");
 });
 
 test("rolling audio buffer emits a WAV cropped to the requested interval", () => {

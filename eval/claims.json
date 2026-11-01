@@ -1,32 +1,332 @@
 [
-  {"id":"train-01","split":"tune","expected":"RECEIPT FOUND","claim":"Alice was getting bored sitting by her sister outside.","trigger":"tired of sitting by her sister"},
-  {"id":"train-02","split":"tune","expected":"RECEIPT FOUND","claim":"She wondered what the point of a book was if it had no pictures or conversations.","trigger":"without pictures or conversations"},
-  {"id":"train-03","split":"tune","expected":"RECEIPT FOUND","claim":"The hot day was making Alice sleepy.","trigger":"hot day made her feel very sleepy"},
-  {"id":"train-04","split":"tune","expected":"RECEIPT FOUND","claim":"A white rabbit with pink eyes hurried past her.","trigger":"White Rabbit with pink eyes"},
-  {"id":"train-05","split":"tune","expected":"RECEIPT FOUND","claim":"The rabbit said it was going to be late.","trigger":"I shall be late"},
-  {"id":"train-06","split":"tune","expected":"RECEIPT FOUND","claim":"The rabbit checked a watch from its waistcoat pocket.","trigger":"watch out of its waistcoat pocket"},
-  {"id":"train-07","split":"tune","expected":"RECEIPT FOUND","claim":"Alice sprinted after the rabbit across the field.","trigger":"she ran across the field after it"},
-  {"id":"train-08","split":"tune","expected":"RECEIPT FOUND","claim":"She went down the rabbit hole without thinking about how she would get back out.","trigger":"never once considering how in the world she was to get out again"},
-  {"id":"train-09","split":"tune","expected":"NO MATCH","claim":"The rabbit said it was early and had plenty of time.","trigger":"I shall be late"},
-  {"id":"train-10","split":"tune","expected":"NO MATCH","claim":"The rabbit had bright blue eyes.","trigger":"White Rabbit with pink eyes"},
-  {"id":"train-11","split":"tune","expected":"NO MATCH","claim":"The rabbit pulled a carrot out of its jacket pocket.","trigger":"watch out of its waistcoat pocket"},
-  {"id":"train-12","split":"tune","expected":"NO MATCH","claim":"Alice found a full jar of orange marmalade on the shelf.","trigger":"ORANGE MARMALADE"},
-  {"id":"train-13","split":"tune","expected":"NO MATCH","claim":"Alice climbed up the rabbit hole to find her sister.","trigger":"falling down a very deep well"},
-  {"id":"train-14","split":"tune","expected":"NO MATCH","claim":"Alice's sister followed her down into the hole.","trigger":"Down, down, down"},
-  {"id":"train-15","split":"tune","expected":"NO MATCH","claim":"The rabbit took out an alarm clock from its waistcoat.","trigger":"watch out of its waistcoat pocket"},
-  {"id":"held-16","split":"held_out","expected":"RECEIPT FOUND","claim":"Alice noticed shelves and cupboards built into the sides as she fell.","trigger":"filled with cupboards and book-shelves"},
-  {"id":"held-17","split":"held_out","expected":"RECEIPT FOUND","claim":"She wondered how many miles she had dropped.","trigger":"how many miles I’ve fallen"},
-  {"id":"held-18","split":"held_out","expected":"RECEIPT FOUND","claim":"While falling, Alice worried that her cat Dinah would miss her.","trigger":"Dinah’ll miss me very much"},
-  {"id":"held-19","split":"held_out","expected":"RECEIPT FOUND","claim":"She hit a pile of sticks and dry leaves when the fall ended.","trigger":"heap of sticks and dry leaves"},
-  {"id":"held-20","split":"held_out","expected":"RECEIPT FOUND","claim":"The rabbit hurried off muttering about its ears and whiskers.","trigger":"Oh my ears and whiskers"},
-  {"id":"held-21","split":"held_out","expected":"RECEIPT FOUND","claim":"The hall had locked doors all around it.","trigger":"There were doors all round the hall"},
-  {"id":"held-22","split":"held_out","expected":"RECEIPT FOUND","claim":"A tiny golden key was lying on a glass table with three legs.","trigger":"tiny golden key"},
-  {"id":"held-23","split":"held_out","expected":"RECEIPT FOUND","claim":"She discovered a short little door hidden behind a curtain.","trigger":"behind it was a little door"},
-  {"id":"held-24","split":"held_out","expected":"RECEIPT FOUND","claim":"The little door opened onto a beautiful garden.","trigger":"loveliest garden you ever saw"},
-  {"id":"held-25","split":"held_out","expected":"RECEIPT FOUND","claim":"The bottle's label told Alice to drink it.","trigger":"DRINK ME"},
-  {"id":"held-26","split":"held_out","expected":"NO MATCH","claim":"Alice drank from the bottle marked poison.","trigger":"not marked poison"},
-  {"id":"held-27","split":"held_out","expected":"NO MATCH","claim":"Alice took a big gulp before checking what was in the bottle.","trigger":"I’ll look first"},
-  {"id":"held-28","split":"held_out","expected":"NO MATCH","claim":"Alice could fit through the little doorway without shrinking.","trigger":"could not even get her head through the doorway"},
-  {"id":"held-29","split":"held_out","expected":"NO MATCH","claim":"The key opened every locked door in the hall.","trigger":"it would not open any of them"},
-  {"id":"held-30","split":"held_out","expected":"NO MATCH","claim":"Alice found a currant cake with EAT ME written on it in chapter one.","trigger":"DRINK ME"}
+  {
+    "id": "train-01",
+    "split": "tune",
+    "expected": "RECEIPT FOUND",
+    "claim": "Alice was getting bored sitting by her sister outside.",
+    "trigger": "tired of sitting by her sister"
+  },
+  {
+    "id": "train-02",
+    "split": "tune",
+    "expected": "RECEIPT FOUND",
+    "claim": "She wondered what the point of a book was if it had no pictures or conversations.",
+    "trigger": "without pictures or conversations"
+  },
+  {
+    "id": "train-03",
+    "split": "tune",
+    "expected": "RECEIPT FOUND",
+    "claim": "The hot day was making Alice sleepy.",
+    "trigger": "hot day made her feel very sleepy"
+  },
+  {
+    "id": "train-04",
+    "split": "tune",
+    "expected": "RECEIPT FOUND",
+    "claim": "A white rabbit with pink eyes hurried past her.",
+    "trigger": "White Rabbit with pink eyes"
+  },
+  {
+    "id": "train-05",
+    "split": "tune",
+    "expected": "RECEIPT FOUND",
+    "claim": "The rabbit said it was going to be late.",
+    "trigger": "I shall be late"
+  },
+  {
+    "id": "train-06",
+    "split": "tune",
+    "expected": "RECEIPT FOUND",
+    "claim": "The rabbit checked a watch from its waistcoat pocket.",
+    "trigger": "watch out of its waistcoat pocket"
+  },
+  {
+    "id": "train-07",
+    "split": "tune",
+    "expected": "RECEIPT FOUND",
+    "claim": "Alice sprinted after the rabbit across the field.",
+    "trigger": "she ran across the field after it"
+  },
+  {
+    "id": "train-08",
+    "split": "tune",
+    "expected": "RECEIPT FOUND",
+    "claim": "She went down the rabbit hole without thinking about how she would get back out.",
+    "trigger": "never once considering how in the world she was to get out again"
+  },
+  {
+    "id": "train-09",
+    "split": "tune",
+    "expected": "NO MATCH",
+    "claim": "The rabbit said it was early and had plenty of time.",
+    "trigger": "I shall be late"
+  },
+  {
+    "id": "train-10",
+    "split": "tune",
+    "expected": "NO MATCH",
+    "claim": "The rabbit had bright blue eyes.",
+    "trigger": "White Rabbit with pink eyes"
+  },
+  {
+    "id": "train-11",
+    "split": "tune",
+    "expected": "NO MATCH",
+    "claim": "The rabbit pulled a carrot out of its jacket pocket.",
+    "trigger": "watch out of its waistcoat pocket"
+  },
+  {
+    "id": "train-12",
+    "split": "tune",
+    "expected": "NO MATCH",
+    "claim": "Alice found a full jar of orange marmalade on the shelf.",
+    "trigger": "ORANGE MARMALADE"
+  },
+  {
+    "id": "train-13",
+    "split": "tune",
+    "expected": "NO MATCH",
+    "claim": "Alice climbed up the rabbit hole to find her sister.",
+    "trigger": "falling down a very deep well"
+  },
+  {
+    "id": "train-14",
+    "split": "tune",
+    "expected": "NO MATCH",
+    "claim": "Alice's sister followed her down into the hole.",
+    "trigger": "Down, down, down"
+  },
+  {
+    "id": "train-15",
+    "split": "tune",
+    "expected": "NO MATCH",
+    "claim": "The rabbit took out an alarm clock from its waistcoat.",
+    "trigger": "watch out of its waistcoat pocket"
+  },
+  {
+    "id": "held-16",
+    "split": "seen_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "Alice noticed shelves and cupboards built into the sides as she fell.",
+    "trigger": "filled with cupboards and book-shelves"
+  },
+  {
+    "id": "held-17",
+    "split": "seen_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "She wondered how many miles she had dropped.",
+    "trigger": "how many miles I’ve fallen"
+  },
+  {
+    "id": "held-18",
+    "split": "seen_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "While falling, Alice worried that her cat Dinah would miss her.",
+    "trigger": "Dinah’ll miss me very much"
+  },
+  {
+    "id": "held-19",
+    "split": "seen_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "She hit a pile of sticks and dry leaves when the fall ended.",
+    "trigger": "heap of sticks and dry leaves"
+  },
+  {
+    "id": "held-20",
+    "split": "seen_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "The rabbit hurried off muttering about its ears and whiskers.",
+    "trigger": "Oh my ears and whiskers"
+  },
+  {
+    "id": "held-21",
+    "split": "seen_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "The hall had locked doors all around it.",
+    "trigger": "There were doors all round the hall"
+  },
+  {
+    "id": "held-22",
+    "split": "seen_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "A tiny golden key was lying on a glass table with three legs.",
+    "trigger": "tiny golden key"
+  },
+  {
+    "id": "held-23",
+    "split": "seen_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "She discovered a short little door hidden behind a curtain.",
+    "trigger": "behind it was a little door"
+  },
+  {
+    "id": "held-24",
+    "split": "seen_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "The little door opened onto a beautiful garden.",
+    "trigger": "loveliest garden you ever saw"
+  },
+  {
+    "id": "held-25",
+    "split": "seen_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "The bottle's label told Alice to drink it.",
+    "trigger": "DRINK ME"
+  },
+  {
+    "id": "held-26",
+    "split": "seen_held_out",
+    "expected": "NO MATCH",
+    "claim": "Alice drank from the bottle marked poison.",
+    "trigger": "not marked poison"
+  },
+  {
+    "id": "held-27",
+    "split": "seen_held_out",
+    "expected": "NO MATCH",
+    "claim": "Alice took a big gulp before checking what was in the bottle.",
+    "trigger": "I’ll look first"
+  },
+  {
+    "id": "held-28",
+    "split": "seen_held_out",
+    "expected": "NO MATCH",
+    "claim": "Alice could fit through the little doorway without shrinking.",
+    "trigger": "could not even get her head through the doorway"
+  },
+  {
+    "id": "held-29",
+    "split": "seen_held_out",
+    "expected": "NO MATCH",
+    "claim": "The key opened every locked door in the hall.",
+    "trigger": "it would not open any of them"
+  },
+  {
+    "id": "held-30",
+    "split": "seen_held_out",
+    "expected": "NO MATCH",
+    "claim": "Alice found a currant cake with EAT ME written on it in chapter one.",
+    "trigger": "DRINK ME"
+  },
+  {
+    "id": "fresh-01",
+    "split": "fresh_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "you said Alice noticed maps and pictures hanging on pegs along the sides as she fell"
+  },
+  {
+    "id": "fresh-02",
+    "split": "fresh_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "you said she imagined asking whether the country was New Zealand or Australia"
+  },
+  {
+    "id": "fresh-03",
+    "split": "fresh_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "you said Alice had shrunk to ten inches tall after tasting the drink"
+  },
+  {
+    "id": "fresh-04",
+    "split": "fresh_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "you said she got nervous she might shrink away completely like a blown out candle"
+  },
+  {
+    "id": "fresh-05",
+    "split": "fresh_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "you said she tried climbing a leg of the glass table but it was too slippery"
+  },
+  {
+    "id": "fresh-06",
+    "split": "fresh_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "you said she found a tiny currant cake inside a little glass box under the table"
+  },
+  {
+    "id": "fresh-07",
+    "split": "fresh_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "you said Alice ate the cake expecting it might change her size, but nothing happened"
+  },
+  {
+    "id": "fresh-08",
+    "split": "fresh_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "you said the drink tasted like a mix of cherry tart, custard, pineapple, turkey, toffee and toast"
+  },
+  {
+    "id": "fresh-09",
+    "split": "fresh_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "you said Alice once tried to box her own ears for cheating while playing croquet against herself"
+  },
+  {
+    "id": "fresh-10",
+    "split": "fresh_held_out",
+    "expected": "RECEIPT FOUND",
+    "claim": "you said she usually gave herself good advice but hardly ever followed it"
+  },
+  {
+    "id": "fresh-11",
+    "split": "fresh_held_out",
+    "expected": "NO MATCH",
+    "claim": "you said the maps and pictures were painted on the ceiling above Alice"
+  },
+  {
+    "id": "fresh-12",
+    "split": "fresh_held_out",
+    "expected": "NO MATCH",
+    "claim": "you said she wondered if the country was France or Italy"
+  },
+  {
+    "id": "fresh-13",
+    "split": "fresh_held_out",
+    "expected": "NO MATCH",
+    "claim": "you said drinking the bottle made Alice grow to twenty inches tall"
+  },
+  {
+    "id": "fresh-14",
+    "split": "fresh_held_out",
+    "expected": "NO MATCH",
+    "claim": "you said Alice was eager to shrink until she disappeared like a candle"
+  },
+  {
+    "id": "fresh-15",
+    "split": "fresh_held_out",
+    "expected": "NO MATCH",
+    "claim": "you said the table leg was rough and easy for Alice to climb"
+  },
+  {
+    "id": "fresh-16",
+    "split": "fresh_held_out",
+    "expected": "NO MATCH",
+    "claim": "you said the glass box with the cake was sitting on top of the table"
+  },
+  {
+    "id": "fresh-17",
+    "split": "fresh_held_out",
+    "expected": "NO MATCH",
+    "claim": "you said the cake was labelled DRINK ME and covered in raisins"
+  },
+  {
+    "id": "fresh-18",
+    "split": "fresh_held_out",
+    "expected": "NO MATCH",
+    "claim": "you said the cake immediately made Alice grow much taller"
+  },
+  {
+    "id": "fresh-19",
+    "split": "fresh_held_out",
+    "expected": "NO MATCH",
+    "claim": "you said Alice was playing croquet against her sister when she cheated"
+  },
+  {
+    "id": "fresh-20",
+    "split": "fresh_held_out",
+    "expected": "NO MATCH",
+    "claim": "you said Alice always followed every piece of advice she gave herself"
+  }
 ]

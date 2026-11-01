@@ -1,3 +1,6 @@
 faster-whisper>=1.1.0
 numpy>=1.26.0
 fastembed>=0.9.1
+huggingface-hub>=0.24.0
+onnxruntime>=1.18.0
+tokenizers>=0.19.0
