@@ -1,0 +1,26 @@
+{
+  "name": "receipts-you-said-that",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "npm run build && node dist/src/server.js",
+    "start": "npm run build && node dist/src/server.js",
+    "auth": "npm run build && node dist/src/auth.js",
+    "demo": "npm run build && node dist/src/server.js --demo",
+    "test": "npm run build && node dist/test/run.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^22.16.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.2"
+  }
+}
