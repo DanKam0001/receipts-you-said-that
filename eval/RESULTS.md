@@ -1,6 +1,6 @@
 # Evaluation results
 
-Run date: 2026-11-01T11:56:10.981Z
+Run date: 2026-11-01T12:14:33.867Z
 
 ## Status: COMPLETE
 
@@ -9,7 +9,7 @@ Fresh held-out claims were written before this revised verifier was run. The pri
 - Replay mode: skipped; validated cached transcript reused.
 - Transcript cache used: yes.
 - ASR: cuda/float16; model small.en; transcript utterances 189; chunk RTF mean 0.203, p95 0.214, max 1.264 (below 1.0 keeps pace).
-- Local verifier: Xenova/nli-deberta-v3-small, CPU; each query retrieved up to 8 hybrid-ranked transcript windows of 1-3 adjacent utterances, then verified premise/hypothesis pairs. Mean pair inference 15.60 ms (target smoke range 10-15 ms).
+- Local verifier: Xenova/nli-deberta-v3-small, CPU; each query retrieved up to 8 hybrid-ranked transcript windows of 1-3 adjacent utterances, then verified premise/hypothesis pairs. Mean pair inference 15.37 ms (target smoke range 10-15 ms).
 - Tune-only thresholds: entailment 0.55, contradiction 0.35, negation guard 0.800, on-topic retrieval 0.18; tune correct 14/15 with zero false RECEIPT FOUND. Tune-only thresholds were saved to ignored data/nli-thresholds.json for the server.
 - NO MATCH policy: requires a retrieved on-topic contradiction or no retrieved candidate; neutral and weak off-topic windows return CAN'T TELL. This protects viewers from losing a life when transcript evidence is weak, at the cost of more uncertain outcomes.
 
@@ -18,7 +18,7 @@ Fresh held-out claims were written before this revised verifier was run. The pri
 - Outcome counts: RECEIPT FOUND 6, NO MATCH 12, CAN'T TELL 2.
 - Correct outcome: 15/20 (75.0%); wrong false RECEIPT FOUND: 0.
 - WER: 11.53% (253 edits / 2195 reference words).
-- Claim-to-decision latency: mean 207.8 ms; p95 242.5 ms.
+- Claim-to-decision latency: mean 214.3 ms; p95 253.6 ms.
 - Target (zero wrong false FOUND and at least 14/20 correct): MET.
 
 ## Fresh held-out claims
