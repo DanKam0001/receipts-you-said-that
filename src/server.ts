@@ -27,7 +27,7 @@ const buffer = new RollingAudioBuffer(180), transcript: Utterance[] = [], clips 
 const clients = new Set<import("ws").WebSocket>();
 
 const receiptStore = new ReceiptStore(resolve("data/receipts"));
-function snapshot() { return { lives, maxLives, optedIn, receipt, transcript: transcript.length, embeddingMs: lastEmbeddingLatency, bufferedSeconds: buffer.bufferedSeconds, asr: worker.status, audio: audioSource ? "running" : "stopped", source: chat ? (chat.simulated ? "simulated" : "twitch") : "none", simulated: Boolean(chat?.simulated), eventsubConnected, lifetimeReceiptCount, holdMs: Number(process.env.RECEIPTS_HOLD_MS ?? 5000) }; }
+function snapshot() { return { lives, maxLives, optedIn, receipt, transcript: transcript.length, embeddingMs: lastEmbeddingLatency, bufferedSeconds: buffer.bufferedSeconds, asr: worker.status, audio: audioSource ? "running" : "stopped", source: chat ? (chat.simulated ? "simulated" : "twitch") : "none", simulated: Boolean(chat?.simulated), scriptedAudio: demo || process.env.RECEIPTS_SCRIPTED_AUDIO === "1", eventsubConnected, lifetimeReceiptCount, holdMs: Number(process.env.RECEIPTS_HOLD_MS ?? 5000) }; }
 function broadcast() { const value = JSON.stringify(snapshot()); for (const c of clients) if (c.readyState === 1) c.send(value); }
 wss.on("connection", c => { clients.add(c); c.send(JSON.stringify(snapshot())); c.on("close", () => clients.delete(c)); });
 
@@ -138,6 +138,8 @@ app.get("/control", (_req, res) => res.sendFile(resolve("public/control.html")))
 app.get("/receipts", (_req, res) => res.sendFile(resolve("public/receipts.html")));
 app.get("/proof", (_req, res) => res.sendFile(resolve("public/proof.html")));
 app.get("/demo", (_req, res) => demo ? res.sendFile(resolve("public/demo.html")) : res.sendStatus(404));
+app.get("/stage", (_req, res) => res.sendFile(resolve("public/stage.html")));
+app.get("/overlay-layout.js", (_req, res) => res.type("application/javascript").sendFile(resolve("dist/src/overlay-layout.js")));
 app.get("/api/state", (_req, res) => res.json(snapshot()));
 app.get("/api/clip/:id", async (req, res) => { const clip = clips.get(req.params.id) ?? await receiptStore.clip(req.params.id); if (!clip) return res.sendStatus(404); res.type("audio/wav").send(clip); });
 app.get("/api/receipts", async (_req, res) => res.json(await receiptStore.list()));

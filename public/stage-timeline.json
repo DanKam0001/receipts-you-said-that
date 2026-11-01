@@ -1,0 +1,10 @@
+{
+  "durationSeconds": 90,
+  "beats": [
+    { "at": 0, "event": "calm-fight" },
+    { "at": 40, "event": "phase-two" },
+    { "at": 40, "until": 52, "event": "hero-health-drop" },
+    { "at": 52, "event": "hero-died" },
+    { "at": 58, "event": "new-attempt" }
+  ]
+}

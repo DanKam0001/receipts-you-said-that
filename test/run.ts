@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { RollingAudioBuffer } from "../src/audio.js";
 import { decideVerified, normalizeClaimForNli, retrieve, type Candidate, type NliProbabilities } from "../src/matcher.js";
 import type { Utterance } from "../src/model.js";
+import { fitQuote, receiptCountLabel } from "../src/overlay-layout.js";
 
 let count = 0;
 function test(name: string, body: () => void) { body(); count++; console.log(`ok ${count} - ${name}`); }
@@ -13,6 +14,21 @@ const base: Candidate = { id: "u2-2", startIndex: 1, utteranceCount: 1, premise:
 test("viewer attribution is stripped before verification for first-person transcript wording", () => {
   assert.equal(normalizeClaimForNli("you said that Alice wondered how far she'd fallen"), "Alice wondered how far she'd fallen");
   assert.equal(normalizeClaimForNli("the streamer claimed she was late"), "she was late");
+});
+
+test("overlay receipt count is singular only for one", () => {
+  assert.equal(receiptCountLabel(1), "1 RECEIPT");
+  assert.equal(receiptCountLabel(2), "2 RECEIPTS");
+});
+
+test("overlay quote fitting stays at least 44px, within three lines, and retains active words", () => {
+  const source = Array.from({ length: 90 }, (_, index) => `word${index}`).join(" ");
+  const fit = fitQuote(source, 900, 68);
+  assert.equal(fit.fontSize, 44);
+  assert.equal(fit.truncated, true);
+  assert.ok(fit.startWord <= 68 && fit.endWord > 68);
+  assert.match(fit.text, /^… /);
+  assert.match(fit.text, / …$/);
 });
 
 test("retrieval includes adjacent windows of one, two, and three utterances, capped at eight", () => {
