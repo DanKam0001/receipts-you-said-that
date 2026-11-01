@@ -9,9 +9,10 @@
     "start": "npm run build && node dist/src/server.js",
     "auth": "npm run build && node dist/src/auth.js",
     "twitch:check": "npm run build && node dist/src/twitch-check.js",
-    "demo": "npm run build && node dist/src/server.js --demo",
+    "demo": "npm run setup && npm run build && node dist/src/server.js --demo",
+    "setup": "node scripts/setup.mjs",
     "eval": "npm run build && node dist/eval/run.js",
-    "test": "npm run build && node dist/test/run.js && node dist/test/audio-replay.js && node dist/test/sidecar-restart.js && node dist/test/replay-completion.js && node dist/test/receipt-store.js",
+    "test": "npm run build && node dist/test/run.js && node dist/test/audio-replay.js && node dist/test/sidecar-restart.js && node dist/test/replay-completion.js && node dist/test/receipt-store.js && node dist/test/receipt-refinement.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -62,12 +62,12 @@ export class WhisperWorker extends EventEmitter {
   private launchSidecar() {
     if (!this.running || this.child) return;
     this.setStatus(this.restartAttempts ? "restarting" : "starting", this.restartAttempts ? "Restarting local speech sidecar" : "Starting local speech sidecar");
-    const python = process.env.PYTHON ?? resolve(".venv", "Scripts", "python.exe");
+    const python = process.env.PYTHON ?? resolve(".venv", process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python");
     let child: ChildProcessWithoutNullStreams;
     try {
       child = this.launch(python, ["asr/worker.py"], { windowsHide: true, env: { ...process.env,
-        HF_HOME: process.env.HF_HOME ?? "D:/hf_cache",
-        FASTEMBED_CACHE_PATH: process.env.FASTEMBED_CACHE_PATH ?? "D:/hf_cache/fastembed",
+        ...(process.env.HF_HOME ? { HF_HOME: process.env.HF_HOME } : {}),
+        ...(process.env.FASTEMBED_CACHE_PATH ? { FASTEMBED_CACHE_PATH: process.env.FASTEMBED_CACHE_PATH } : {}),
         RECEIPTS_SKIP_ASR: process.env.RECEIPTS_SKIP_ASR ?? "0",
         RECEIPTS_ASR_DEVICE: this.cpuStartupFallback ? "cpu" : (process.env.RECEIPTS_ASR_DEVICE ?? "cuda") } });
     } catch (error) {

@@ -12,6 +12,7 @@ import type { ChatMessage, Receipt, Utterance } from "./model.js";
 import { SimulatedChatSource, TwitchChatSource, type ChatSource } from "./twitch.js";
 import { WhisperWorker } from "./transcriber.js";
 import { ReceiptStore } from "./receipt-store.js";
+import { refineFoundReceipt } from "./receipt-refinement.js";
 
 const app = express(); app.use(express.json()); app.use(express.static("public"));
 const http = createServer(app), wss = new WebSocketServer({ server: http });
@@ -19,7 +20,7 @@ const demo = process.argv.includes("--demo");
 let decisionThresholds: DecisionThresholds = DEFAULT_THRESHOLDS;
 try { decisionThresholds = { ...DEFAULT_THRESHOLDS, ...JSON.parse(readFileSync("data/nli-thresholds.json", "utf8")) }; } catch { /* Use defaults until eval writes tune-only thresholds. */ }
 const maxLives = Number(process.env.RECEIPTS_LIVES ?? 3);
-let lives = maxLives, optedIn = false;
+let lives = maxLives, optedIn = demo;
 let receipt: Receipt | undefined, audioSource: FfmpegPcmSource | undefined, chat: ChatSource;
 let eventsubConnected = false, lifetimeReceiptCount = 0;
 const buffer = new RollingAudioBuffer(180), transcript: Utterance[] = [], clips = new Map<string, Buffer>();
@@ -98,6 +99,11 @@ async function decideClaim(query: string, username: string, startedAt: number) {
     sendReply("CAN'T TELL. Local retrieval or verification model is not ready; no life lost."); broadcast(); return;
   }
   receipt = decideVerified(query, candidates, probabilities, username, randomUUID(), decisionThresholds);
+  if (receipt.outcome === "RECEIPT FOUND") {
+    const winner = candidates.find(candidate => candidate.id === receipt!.candidateId);
+    if (winner) try { receipt = await refineFoundReceipt(receipt, winner, transcript, pairs => worker.verify(pairs), decisionThresholds, Number(process.env.RECEIPTS_MAX_CLIP_S ?? 15)); }
+    catch (error) { console.error(`[receipts] Quote refinement unavailable; retained verified window: ${(error as Error).message}`); }
+  }
   receipt.decisionMs = Number((performance.now() - startedAt).toFixed(1));
   console.log(`Receipt decision completed (${receipt.outcome}, entailment=${receipt.score.toFixed(3)}, candidate=${receipt.candidateId ?? "none"}, retrieval=${receipt.retrievalScore?.toFixed(3) ?? "none"}, decision_ms=${receipt.decisionMs})`);
   if (receipt.outcome === "NO MATCH") { lives = Math.max(0, lives - 1); sendReply(`NO MATCH. Chat loses a life. ${lives} remain.`); }
@@ -131,6 +137,7 @@ app.get("/", (_req, res) => res.redirect("/overlay.html"));
 app.get("/control", (_req, res) => res.sendFile(resolve("public/control.html")));
 app.get("/receipts", (_req, res) => res.sendFile(resolve("public/receipts.html")));
 app.get("/proof", (_req, res) => res.sendFile(resolve("public/proof.html")));
+app.get("/demo", (_req, res) => demo ? res.sendFile(resolve("public/demo.html")) : res.sendStatus(404));
 app.get("/api/state", (_req, res) => res.json(snapshot()));
 app.get("/api/clip/:id", async (req, res) => { const clip = clips.get(req.params.id) ?? await receiptStore.clip(req.params.id); if (!clip) return res.sendStatus(404); res.type("audio/wav").send(clip); });
 app.get("/api/receipts", async (_req, res) => res.json(await receiptStore.list()));
@@ -173,10 +180,10 @@ http.listen(port, "127.0.0.1", async () => {
   console.log(`Receipts ${demo ? "demo" : "server"} listening at http://localhost:${port}`);
   console.log(`OBS overlay: http://localhost:${port}/overlay.html (1920x1080)`);
   console.log(`Local controls: http://localhost:${port}/control`);
-  if (demo) console.log("SIMULATED CHAT is visibly marked on the overlay. Opt in, choose a real speech replay, then submit !receipts <claim>.");
+  if (demo) console.log("SCRIPTED AUDIO and SIMULATED CHAT demo. Open /demo for one-click claims.");
   try { await chat.start(); }
   catch (e) { console.error(`Chat connection failed: ${(e as Error).message}`); }
-  const replay = process.env.RECEIPTS_AUDIO;
+  const replay = demo ? "demo/sample_public_domain.wav" : process.env.RECEIPTS_AUDIO;
   if (replay && existsSync(replay)) void startAudio("file", replay).catch(e => console.error(`[audio] ${(e as Error).message}`));
   else console.log("No replay started. Set RECEIPTS_AUDIO or choose a source in /control.");
 });

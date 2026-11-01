@@ -1,4 +1,5 @@
-import type { Receipt, Utterance } from "./model.js";
+import type { Receipt, Utterance, WordTiming } from "./model.js";
+import { timedWords } from "./transcript-timing.js";
 
 export interface DecisionThresholds { entailment: number; contradiction: number; negationGuardEntailment: number; onTopicRetrieval: number; }
 export const DEFAULT_THRESHOLDS: DecisionThresholds = { entailment: 0.78, contradiction: 0.72, negationGuardEntailment: 0.975, onTopicRetrieval: 0.30 };
@@ -47,7 +48,7 @@ function averageEmbedding(rows: Utterance[]): number[] | undefined {
   return result;
 }
 
-function negationConflict(claim: string, candidate: string): boolean {
+export function hasNegationConflict(claim: string, candidate: string): boolean {
   const q = new Set(normalize(claim).match(/[a-z']+/g) ?? []), c = new Set(normalize(candidate).match(/[a-z']+/g) ?? []);
   if ((q.has("never") && c.has("always")) || (q.has("always") && c.has("never"))) return true;
   const qNeg = [...q].filter(word => negations.has(word)).length % 2 === 1;
@@ -70,6 +71,8 @@ export interface Candidate {
   clipStart: number;
   clipEnd: number;
   negationConflict: boolean;
+  utterances: Utterance[];
+  quoteWords: WordTiming[];
 }
 export interface NliProbabilities { contradiction: number; entailment: number; neutral: number; }
 export interface ScoredCandidate extends Candidate { probabilities: NliProbabilities; }
@@ -84,6 +87,7 @@ export function retrieve(query: string, transcript: Utterance[], queryEmbedding:
       if (rows.length !== size) continue;
       const premise = rows.map(row => row.text.trim()).filter(Boolean).join(" ");
       if (!premise) continue;
+      const quoteWords = timedWords(rows);
       const lexical = lexicalSimilarity(proposition, premise);
       const vector = averageEmbedding(rows);
       const semantic = vector ? cosine(queryEmbedding, vector) : 0;
@@ -98,12 +102,14 @@ export function retrieve(query: string, transcript: Utterance[], queryEmbedding:
         lexicalScore: lexical,
         semanticScore: semantic,
         quote: premise,
-        timestamp: rows[0]!.start,
-        quoteEnd: rows.at(-1)!.end,
+        timestamp: quoteWords[0]?.start ?? rows[0]!.start,
+        quoteEnd: quoteWords.at(-1)?.end ?? rows.at(-1)!.end,
         context: [before?.text, after?.text].filter(Boolean).join(" … "),
         clipStart: Math.max(0, before?.start ?? rows[0]!.start),
         clipEnd: after?.end ?? rows.at(-1)!.end,
-        negationConflict: negationConflict(proposition, premise)
+        negationConflict: hasNegationConflict(proposition, premise),
+        utterances: rows,
+        quoteWords
       });
     }
   }
@@ -135,7 +141,7 @@ export function decideVerified(
   if (best.probabilities.entailment >= thresholds.entailment && best.probabilities.contradiction <= thresholds.contradiction && !negationVeto) {
     return { ...base, ...record, outcome: "RECEIPT FOUND", status: "pending", score,
       quote: best.quote, timestamp: best.timestamp, context: best.context,
-      quoteEnd: best.quoteEnd, clipStart: best.clipStart, clipEnd: best.clipEnd };
+      quoteEnd: best.quoteEnd, quoteWords: best.quoteWords, clipStart: best.clipStart, clipEnd: best.clipEnd };
   }
 
   const clearContradiction = [...scored].filter(candidate => candidate.retrievalScore >= thresholds.onTopicRetrieval

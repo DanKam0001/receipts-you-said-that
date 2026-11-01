@@ -21,4 +21,5 @@ auth-token.json
 audio/
 recordings/
 *.wav
+!demo/*.wav
 *.mp3

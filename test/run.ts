@@ -7,7 +7,8 @@ let count = 0;
 function test(name: string, body: () => void) { body(); count++; console.log(`ok ${count} - ${name}`); }
 const p = (entailment: number, contradiction: number, neutral = 1 - entailment - contradiction): NliProbabilities => ({ entailment, contradiction, neutral });
 const base: Candidate = { id: "u2-2", startIndex: 1, utteranceCount: 1, premise: "I wondered how many miles I had fallen.", retrievalScore: 0.82, lexicalScore: 0.42, semanticScore: 0.9,
-  quote: "I wondered how many miles I've fallen.", timestamp: 12, quoteEnd: 14, context: "It was a curious fall. … The ground seemed far away.", clipStart: 10, clipEnd: 17, negationConflict: false };
+  quote: "I wondered how many miles I've fallen.", timestamp: 12, quoteEnd: 14, context: "It was a curious fall. … The ground seemed far away.", clipStart: 10, clipEnd: 17, negationConflict: false,
+  utterances: [{ start: 12, end: 14, text: "I wondered how many miles I've fallen." }], quoteWords: [] };
 
 test("viewer attribution is stripped before verification for first-person transcript wording", () => {
   assert.equal(normalizeClaimForNli("you said that Alice wondered how far she'd fallen"), "Alice wondered how far she'd fallen");

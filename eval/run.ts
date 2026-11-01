@@ -15,7 +15,7 @@ interface SyntheticFixture { description: string; lines: string[]; claims: Synth
 interface Trial { outcome: string; score: number; latency: number; candidateId?: string; }
 interface TranscriptCache { version: 2; sourceBytes: number; sourceMtimeMs: number; asrModel: string; device: string; meanRtf: number; maxRtf: number; p95Rtf: number; transcript: Utterance[]; }
 const resultPath = resolve("eval/RESULTS.md"), sourcePath = resolve("data/replay.wav"), referencePath = resolve("data/alice_reference.txt");
-const cachePath = resolve("data/eval-transcript-cache.json"), fastEmbedPath = resolve(".venv/Lib/site-packages/fastembed");
+const cachePath = resolve("data/eval-transcript-cache.json");
 let evaluationClaims: Claim[] = [];
 let activeWorker: WhisperWorker | undefined, activeSource: FfmpegPcmSource | undefined;
 
@@ -43,8 +43,7 @@ async function waitForReady(worker: WhisperWorker) {
 
 async function main() {
   evaluationClaims = JSON.parse(await readFile("eval/claims.json", "utf8")) as Claim[];
-  if (!existsSync(sourcePath) || !existsSync(referencePath)) throw new Error("Replay/reference fixtures are missing; run .venv\\Scripts\\python.exe eval\\prepare.py first");
-  if (!existsSync(fastEmbedPath)) throw new Error("FastEmbed is missing from the existing .venv; install the packages already listed in asr/requirements.txt");
+  if (!existsSync(sourcePath) || !existsSync(referencePath)) throw new Error("Replay/reference fixtures are missing; run the platform Python from your .venv to execute eval/prepare.py first");
   const tune = evaluationClaims.filter(claim => claim.split === "tune"), seen = evaluationClaims.filter(claim => claim.split === "seen_held_out"), fresh = evaluationClaims.filter(claim => claim.split === "fresh_held_out");
   if (evaluationClaims.length !== 50 || tune.length !== 15 || seen.length !== 15 || fresh.length !== 20
       || fresh.filter(claim => claim.expected === "RECEIPT FOUND").length !== 10 || fresh.filter(claim => claim.expected === "NO MATCH").length !== 10)

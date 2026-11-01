@@ -1,62 +1,60 @@
 # Receipts: You Said That
 
-When a viewer types `!receipts <plain-language claim>`, Receipts searches the current local session transcript. A confident match shows the streamer's verbatim sentence, transcript timestamp, adjacent transcript context, and a clip cut from the in-memory audio buffer. A confident miss costs chat one life. An uncertain result never costs a life. There is no generated quote path.
+Receipts lets a viewer type `!receipts <claim>` and checks the claim against the streamer's local session transcript. A confident match plays the streamer's actual buffered voice with an exact transcript quote; uncertain evidence never costs chat a life.
 
-## Requirements
+## Try it in one command
 
-- Windows 11, Node.js 20+, Python 3.10+, and FFmpeg on `PATH`.
-- For local transcription and sentence matching: install `asr/requirements.txt` into `.venv`. Whisper and FastEmbed model files cache under `D:/hf_cache`.
-- GPU mode uses faster-whisper CUDA FP16 and runs a real silence decode probe before reporting ready; any probe failure falls back to CPU int8. Set `RECEIPTS_ASR_DEVICE=cpu` to force CPU or `cuda` to try CUDA first. Optionally set `RECEIPTS_CUDA_DLL_DIR` to the folder containing CUDA DLLs (for example `D:/cuda12/nvidia/cublas/bin`); it is added to the DLL search path before faster-whisper loads. If a native CUDA DLL failure kills the sidecar before startup completes, Node retries with CPU int8. The control page and overlay expose sidecar health, queued audio, lag, and transcription real-time factor. The worker restarts with capped backoff and preserves queued chunks.
-- A real speech recording (WAV or MP3) for replay demos. The app does not ship a canned transcript or synthesized speech.
-- Current API/model references: [Twitch EventSub WebSocket](https://dev.twitch.tv/docs/eventsub/handling-websocket-events/), [Twitch Send Chat Message](https://dev.twitch.tv/docs/api/reference), [faster-whisper README](https://github.com/SYSTRAN/faster-whisper/blob/master/README.md), [Xenova NLI model card](https://huggingface.co/Xenova/nli-deberta-v3-small), [Hugging Face cache/offline loading](https://huggingface.co/docs/huggingface_hub/en/guides/download), and [ONNX Runtime Python API](https://onnxruntime.ai/docs/api/python/api_summary.html).
+Install Node.js 20+, Python 3, and FFmpeg, then clone and run:
 
-## Install and run
-
-```powershell
+```sh
 npm install
-if (!(Test-Path .env)) { Copy-Item .env.example .env }
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install -r asr/requirements.txt
-# Add your own local audio path to RECEIPTS_AUDIO in .env, e.g. C:\\Media\\stream-test.wav
 npm run demo
 ```
 
-Open `http://localhost:3000/control`, click opt-in, and start the replay if it did not auto-start. Submit `!receipts <claim>` in the simulated chat field. The OBS browser source URL is `http://localhost:3000/overlay.html`; set it to 1920x1080. Demo mode visibly displays `SIMULATED CHAT`. The control page can also start a DirectShow capture device by its FFmpeg device name.
+The demo creates `.venv` and installs the local speech packages on first run, then starts the bundled 75-second public-domain audiobook excerpt, opts in, and opens the scripted local demo at [http://localhost:3000/demo](http://localhost:3000/demo). Model files download on first run when online. The page offers three preset claims and free text. The source is clearly labelled **SCRIPTED AUDIO** and **SIMULATED CHAT**; it does not represent a real streamer or viewers. The OBS overlay is [http://localhost:3000/overlay.html](http://localhost:3000/overlay.html).
 
-`npm run demo` does not require Twitch credentials. `RECEIPTS_AUDIO` may be an absolute path; the audio source is played at real time. `RECEIPTS_PORT` can change the local server port if 3000 is already occupied. `npm run start` selects Twitch chat if credentials and a locally authorized token are present, otherwise it uses the simulator. Real chat never receives the simulated label.
+## How it works
 
-## Twitch setup
-
-Put the Twitch application values in `.env` without sharing the file. Device Code Grant does not use a localhost callback:
-
-```dotenv
-TWITCH_CLIENT_ID=your-client-id
-TWITCH_CLIENT_SECRET=your-client-secret
-TWITCH_CHANNEL=your-channel-login
+```text
+Live capture device ─┐
+                     ├─> rolling local audio buffer ─> faster-whisper ─> timestamped transcript
+Real-time file replay┘                                                     │
+                                                                           v
+Twitch !receipts claim ─> hybrid retrieval ─> local NLI verify ─> exact quote + buffered clip
+                                                                           │
+                                                            veto hold ─> OBS overlay + chat reply
 ```
 
-Run `npm run auth`. Open the printed Twitch verification URL on a phone, enter the displayed code, and approve `user:read:chat`, `user:write:chat`, `user:bot`, and `channel:read:stream_key`. The URL/code are also written to ignored `data/auth_prompt.txt`; rotating access and refresh tokens are stored in `.tokens/twitch.json`. Run `npm run twitch:check` to validate identity/scopes and EventSub subscription. Append `-- --send "text"` only when intentionally sending a test chat message. Start the server with `npm run start`.
+Both audio sources share the same path. Replay runs in real time by default, so the demo exercises the same chunking, transcription, matching, veto, and clip path as capture. Audio stays on the machine; only the result reply is sent to Twitch chat.
 
-## Controls and current spike limits
+## The three outcomes
 
-- Broadcaster opt-in is off at startup and is toggled from `/control`.
-- The hold defaults to five seconds (`RECEIPTS_HOLD_MS`). A moderator/broadcaster `!veto` or the local veto button cancels playback during the hold.
-- `RECEIPTS_LIVES` sets the starting chat lives.
-- Audio stays in a bounded in-memory rolling buffer except for confirmed receipt clips, which are saved as WAV plus JSON under ignored `data/receipts/`. Each record persists quote, times, requester, outcome, entailment score, and candidate ID. `/receipts` is the local archive; `/control` can download the current clip.
-- Matching is two-stage: fuzzy lexical plus local sentence-embedding retrieval ranks transcript windows of one, two, or three adjacent utterances; the top eight are checked with the local CPU NLI cross-encoder `Xenova/nli-deberta-v3-small`. The Python sidecar loads its cached ONNX model and tokenizer offline from `D:/hf_cache`, reads class indices from the model config, and verifies candidate-window premise against a wrapper-stripped claim hypothesis. A receipt requires high entailment and low contradiction on the same candidate. The negation guard only vetoes below its tune-swept entailment threshold. NO MATCH requires an on-topic contradiction or no retrieved candidate; weak or off-topic evidence returns CAN'T TELL. Every outcome's score is the deciding window's entailment probability, and the winning candidate ID is recorded.
-- Install the full local model stack with `.venv\\Scripts\\python -m pip install -r asr/requirements.txt`. `npm run eval` sweeps entailment, contradiction, negation-guard, and on-topic retrieval thresholds on the tune half only, holds zero false FOUND as a hard constraint, reports the fresh held-out set as the headline, and separately evaluates `eval/streamer_lines.json` as synthetic text without Whisper transcription. The older held-out claims are retained as `seen_held_out` and are not blind.
-- The `/proof` page shows whether the active source is simulated chat or a connected Twitch EventSub session without displaying secrets. The overlay is transparent at 1920x1080, with animated outcome stamps, large life hearts, veto countdown, waveform and word highlighting during playback, and a lifetime receipt count.
+- **RECEIPT FOUND**: a candidate passes entailment and contradiction checks. The quote is verbatim transcript text, refined to the shortest adjacent sentence span that still verifies; playback comes from the local audio buffer.
+- **NO MATCH**: no transcript candidate was retrieved, or an on-topic candidate clearly contradicts the claim. Only this confident miss costs chat a life.
+- **CAN'T TELL**: transcription or matching evidence is weak, conflicting, or off-topic. Nobody is punished for uncertainty or a transcription error.
 
-## Commands
+Each result shows its entailment score and deciding candidate. The streamer opts in, and moderators or the broadcaster have a short veto window before a found clip plays.
 
-```powershell
-npm run demo       # local simulator + optional file replay
-npm run auth       # Device Code Grant; approve on any device
-npm run start      # local server, Twitch chat if token exists
-npm test           # matcher and rolling buffer tests
-npm run typecheck  # TypeScript check
-npm run eval       # real-time replay + faster-whisper evaluation and threshold sweep
-npm run eval -- --fast  # eval-only accelerated replay; transcript cached for later sweeps
-npm run build      # compile to dist/
-```
+## Privacy
+
+Audio is held in a bounded, local rolling buffer (three minutes by default). Confirmed receipt clips and their JSON records persist locally under ignored `data/receipts/`; no audio or transcript is uploaded. The app sends a chat reply through Twitch when connected. Opt-in starts off for real Twitch mode; the scripted demo opts in automatically and identifies itself as simulated.
+
+## Honest results
+
+The headline speech evaluation used the cached transcript from the 75-second LibriVox *Alice's Adventures in Wonderland* audiobook excerpt with synthetic background noise, not a real streamer. The claims were written by Codex. On the fresh audio set, **15/20 outcomes were correct**, with **zero wrong RECEIPT FOUND** and **6 of 10 true claims found**. Mean claim-to-decision latency was **207.8 ms**, p95 **242.5 ms**; GPU ASR mean real-time factor was **0.203**, and WER was **11.53%**. The separate synthetic first-person gaming text set scored **15/16**, including **one wrong RECEIPT FOUND**. These results are reproduced from [eval/RESULTS.md](eval/RESULTS.md); the synthetic-text result is not speech accuracy evidence.
+
+The current TypeScript suite passed **14 checks** in the latest `npm test` run (8 matcher/audio assertions plus 6 replay, sidecar, storage, and receipt-refinement checks).
+
+## How Codex built it
+
+Built in one Codex thread, including the TypeScript server, replay and capture path, Python sidecar, matcher, overlay, Twitch integration, demo, and evaluation harness. The first single-score matcher scored 3/30, so it was replaced with retrieval plus NLI verification. Development also fixed an eval completion hang, narrowed a blunt negation guard, and changed NO MATCH so weak evidence cannot unfairly cost a life.
+
+## Real Twitch setup
+
+Copy `.env.example` to `.env` and fill in the Twitch application client ID, client secret, and channel login. Run `npm run auth`; open the printed verification URL on a phone and approve the Device Code Grant. The one-time URL and code are written to ignored `data/auth_prompt.txt`, and the access/refresh token is stored in ignored `.tokens/`. Run `npm run twitch:check` to validate scopes and EventSub. It sends a test message only when explicitly invoked with `-- --send "text"`. Then run `npm start`; real chat does not show the simulated label. Never share `.env` or `.tokens/`.
+
+For an OBS browser source, use `http://localhost:3000/overlay.html` at 1920x1080 with a transparent background. `/control` has opt-in, replay/capture, and veto controls; `/receipts` lists saved clips; `/proof` identifies simulated versus connected Twitch mode without exposing secrets.
+
+## Limits
+
+This is a local hackathon prototype. Speech recognition and NLI depend on audio quality and local compute; the measured WER and misses show those limits. The audiobook and Codex-written claims are a reproducible fixture, not representative streamer speech. The synthetic first-person test contains one false receipt, so the current thresholds do not establish production-safe accuracy. Windows 11 is the primary target; setup and virtual-environment paths support POSIX too. CUDA is optional; CPU int8 works, though first-run model downloads need internet unless the Hugging Face cache is already populated.

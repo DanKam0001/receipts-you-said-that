@@ -1,0 +1,6 @@
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
+const win=process.platform==='win32', venv=resolve('.venv'), python=resolve(venv,win?'Scripts':'bin',win?'python.exe':'python'), marker=resolve(venv,'.receipts-requirements-installed');
+function run(command,args){const r=spawnSync(command,args,{encoding:'utf8',shell:win});if(r.status!==0)throw new Error(command.includes('pip')?'Python package installation failed':'Python virtual environment setup failed');}
+try{if(!existsSync(python)){mkdirSync(venv,{recursive:true});const candidates=win?[['py',['-3','-m','venv','.venv']],['python',['-m','venv','.venv']]]:[['python3',['-m','venv','.venv']],['python',['-m','venv','.venv']]];let ok=false;for(const [cmd,args] of candidates){const r=spawnSync(cmd,args,{stdio:'ignore',shell:win});if(r.status===0){ok=true;break}}if(!ok)throw new Error('Python 3 is missing');}if(!existsSync(marker)){run(python,['-m','pip','install','-r','asr/requirements.txt']);writeFileSync(marker,'installed\n')}console.log('Local speech dependencies are ready.')}catch(e){console.error(`Setup unavailable: ${e.message}. Install Node.js 20+, Python 3, and FFmpeg, then run npm run setup.`);process.exit(1)}

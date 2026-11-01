@@ -5,9 +5,6 @@ import os
 import sys
 import time
 
-os.environ.setdefault("HF_HOME", "D:/hf_cache")
-os.environ.setdefault("FASTEMBED_CACHE_PATH", "D:/hf_cache/fastembed")
-
 # CTranslate2 loads CUDA DLLs lazily. Make an optional local CUDA install visible
 # before importing faster_whisper, and keep the DLL directory handle alive.
 cuda_dll_dir = os.environ.get("RECEIPTS_CUDA_DLL_DIR", "").strip()
@@ -31,10 +28,12 @@ else:
     requested = os.environ.get("RECEIPTS_ASR_DEVICE", "cuda").strip().lower()
     if requested not in ("cuda", "cpu"):
         raise ValueError("RECEIPTS_ASR_DEVICE must be either 'cuda' or 'cpu'")
-    download_root = os.path.join(os.environ["HF_HOME"], "faster-whisper")
+    download_root = os.path.join(os.environ["HF_HOME"], "faster-whisper") if os.environ.get("HF_HOME") else None
 
     def load_and_probe(device: str, compute_type: str):
-        candidate = WhisperModel(size, device=device, compute_type=compute_type, download_root=download_root)
+        options = {"device": device, "compute_type": compute_type}
+        if download_root: options["download_root"] = download_root
+        candidate = WhisperModel(size, **options)
         # faster-whisper runs inference lazily. Consume the generator so CUDA kernels
         # and their runtime libraries are actually exercised before READY is emitted.
         silence = np.zeros(2 * 16000, dtype=np.float32)
@@ -77,8 +76,8 @@ try:
     nli_path = snapshot_download(
         repo_id="Xenova/nli-deberta-v3-small",
         allow_patterns=["config.json", "tokenizer.json", "tokenizer_config.json", "onnx/model_quantized.onnx"],
-        cache_dir=os.path.join(os.environ["HF_HOME"], "hub"),
-        local_files_only=True,
+        cache_dir=os.path.join(os.environ["HF_HOME"], "hub") if os.environ.get("HF_HOME") else None,
+        local_files_only=os.environ.get("HF_HUB_OFFLINE") == "1",
     )
     with open(os.path.join(nli_path, "config.json"), "r", encoding="utf-8") as config_file:
         config = json.load(config_file)
@@ -118,10 +117,11 @@ for line in sys.stdin:
                 raise RuntimeError("ASR was skipped because the eval transcript cache is in use")
             audio = np.frombuffer(base64.b64decode(item["pcm"]), dtype="<i2").astype(np.float32) / 32768.0
             started = time.perf_counter()
-            segments, _ = model.transcribe(audio, language="en", beam_size=3, vad_filter=True)
+            segments, _ = model.transcribe(audio, language="en", beam_size=3, vad_filter=True, word_timestamps=True)
             decoded = list(segments)
             rows = [{"start": item["start"] + segment.start, "end": item["start"] + segment.end,
-                     "text": segment.text.strip(), "confidence": max(0.0, min(1.0, float(np.exp(segment.avg_logprob)) * (1.0 - segment.no_speech_prob)))}
+                     "text": segment.text.strip(), "confidence": max(0.0, min(1.0, float(np.exp(segment.avg_logprob)) * (1.0 - segment.no_speech_prob))),
+                     "words": [{"text": word.word.strip(), "start": item["start"] + word.start, "end": item["start"] + word.end} for word in (segment.words or [])]}
                     for segment in decoded if segment.text.strip()]
             vectors = list(embedder.embed([row["text"] for row in rows])) if rows and embedder else []
             for row, vector in zip(rows, vectors):
